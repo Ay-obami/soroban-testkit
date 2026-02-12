@@ -1,27 +1,41 @@
-name: Feature Request
-description: Suggest an idea for this project
-title: "[Feature]: "
+name: Feature request
+description: Propose a new module, generator, assertion, or CLI capability
 labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
-      value: "Thanks for taking the time to suggest a feature!"
+      value: |
+        Check `BUILD_SPEC.md` §3 (Scope boundaries) first. Proposals for
+        mainnet/testnet forking, deployment tooling, frontend/JS testing,
+        a test runner, or network-dependent features will be declined.
   - type: textarea
-    id: description
+    id: problem
     attributes:
-      label: Is your feature request related to a problem? Please describe.
-      description: A clear and concise description of what the problem is.
+      label: Problem
+      description: What testing gap does this fill?
+    validations:
+      required: true
+  - type: input
+    id: paths
+    attributes:
+      label: Affected file paths
     validations:
       required: true
   - type: textarea
-    id: solution
+    id: behavior
     attributes:
-      label: Describe the solution you'd like
-      description: A clear and concise description of what you want to happen.
+      label: Expected behavior / proposed public API
     validations:
       required: true
   - type: textarea
-    id: alternatives
+    id: acceptance
     attributes:
-      label: Describe alternatives you've considered
-      description: A clear and concise description of any alternative solutions or features you've considered.
+      label: Acceptance criteria
+    validations:
+      required: true
+  - type: textarea
+    id: testing
+    attributes:
+      label: How to test locally
+    validations:
+      required: true

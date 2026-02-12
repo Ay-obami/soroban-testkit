@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "examples/vault"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/soroban-testkit/soroban-testkit"
+
+[workspace.dependencies]
+soroban-sdk = "27.0.6"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }

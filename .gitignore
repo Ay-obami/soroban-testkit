@@ -1,24 +1,3 @@
-backend/node_modules/
-node_modules
-target
-contracts/target/
-contracts/**/test_snapshots/
-contracts/cobertura.xml
-dist
-.env
-.next
-.cargo-home/
-.cargo-target/
+/target
+*.wasm
 .DS_Store
-coverage
-*.log
-.idea
-create_issues.sh
-issue.md
-pr.md
-checks.md
-.claude
-.kiro/
-
-# Teacher-only bug-hunt answer key (never commit)
-BUG_HUNT_ANSWER_KEY.md

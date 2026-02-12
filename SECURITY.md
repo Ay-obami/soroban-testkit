@@ -1,40 +1,26 @@
 # Security Policy
 
-For the authentication and authorization model (roles, scopes, JWT flow,
-API-key namespaces, cookie attributes, and route guards) see
-[docs/SECURITY-MODEL.md](docs/SECURITY-MODEL.md).
+`soroban-testkit` is a testing library and CLI; it is not itself deployed
+on-chain. That said, its `audit` subcommand and `AuthMatrix` helper make
+security-relevant claims about contracts, so incorrect results matter.
 
-## Supported Versions
+## Reporting a vulnerability
 
-Only the current `main` branch and the last tagged release are supported with security updates.
+Please report security issues privately via GitHub's
+["Report a vulnerability"](../../security/advisories/new) feature on this
+repository rather than opening a public issue. Include:
 
-| Version | Supported          |
-| ------- | ------------------ |
-| Main    | :white_check_mark: |
-| Last Tag| :white_check_mark: |
-| Older   | :x:                |
+- The affected module or CLI command
+- A minimal reproduction
+- The impact you believe it has (e.g. `audit` missing a real bug,
+  `AuthMatrix` reporting a false pass)
 
-## Reporting a Vulnerability
+We aim to acknowledge reports within 5 business days.
 
-We take the security of our smart contracts, backend, and frontend seriously.
+## Scope notes
 
-**Please do not report security vulnerabilities through public GitHub issues.**
-
-If you believe you have found a security vulnerability, please reach out to us via the [Contributor Telegram](https://t.me/+DOylgFv1jyJlNzM0) and request a private, encrypted contact channel for full disclosure. 
-
-### What to include
-
-*   A description of the vulnerability and its impact.
-*   Steps to reproduce the vulnerability.
-*   Any relevant logs or output.
-
-### Scope
-
-*   **In-Scope:** Smart contracts, backend, and frontend code contained in this repository.
-*   **Out-of-Scope:** Third-party services, dependencies, and infrastructure not managed directly by this repository.
-
-### Response and Disclosure
-
-*   We aim to respond to all vulnerability reports within **5 business days**.
-*   We request a **90-day disclosure window** to give us time to investigate and patch the vulnerability before it is publicly disclosed.
-*   At this time, we do not offer a paid bounty program, but we appreciate and may acknowledge responsible disclosures.
+- `soroban-testkit audit` is a linter with a small set of heuristics, not a
+  security product. A missed finding is a bug we want to fix, but the
+  absence of an audit finding is never a security guarantee.
+- The crate has zero non-dev network dependencies; any change that
+  introduces network access at test time is treated as a regression.

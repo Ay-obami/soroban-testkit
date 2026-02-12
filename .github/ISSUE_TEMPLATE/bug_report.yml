@@ -1,34 +1,31 @@
-name: Bug Report
-description: Create a report to help us improve
-title: "[Bug]: "
+name: Bug report
+description: Something in soroban-testkit doesn't behave as documented
 labels: ["bug"]
 body:
-  - type: markdown
-    attributes:
-      value: "Thanks for taking the time to fill out this bug report!"
   - type: textarea
-    id: description
+    id: problem
     attributes:
-      label: Description
-      description: A clear and concise description of what the bug is.
+      label: Problem
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: input
+    id: module
+    attributes:
+      label: Affected module or file path
+      placeholder: crates/testkit/src/events/assertions.rs
     validations:
       required: true
   - type: textarea
-    id: reproduction
+    id: repro
     attributes:
-      label: Steps to Reproduce
-      description: Steps to reproduce the behavior.
-      placeholder: |
-        1. Go to '...'
-        2. Click on '....'
-        3. Scroll down to '....'
-        4. See error
+      label: Minimal reproduction
+      render: rust
     validations:
       required: true
-  - type: textarea
-    id: expected
+  - type: input
+    id: version
     attributes:
-      label: Expected Behavior
-      description: A clear and concise description of what you expected to happen.
+      label: soroban-testkit / soroban-sdk versions
     validations:
       required: true
