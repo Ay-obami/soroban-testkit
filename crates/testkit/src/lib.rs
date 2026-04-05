@@ -1,6 +1,6 @@
 pub mod core;
 pub mod ledger;
-// mod money;
+pub mod money;
 // mod events;
 // mod tokens;
 // mod auth;
