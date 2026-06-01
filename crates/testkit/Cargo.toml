@@ -12,3 +12,6 @@ doctest = true
 [dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
 thiserror.workspace = true
+
+[dev-dependencies]
+vault = { path = "../../examples/vault", features = ["testutils"] }
