@@ -6,6 +6,11 @@ use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, 
 pub enum DataKey {
     Owner,
     Balance,
+    /// A persistent record whose TTL handling is deliberately buggy in
+    /// `touch_record` and fixed in `touch_record_checked` (see below).
+    Record,
+    /// A temporary record used to demonstrate expiry handling.
+    Temp,
 }
 
 /// Errors this contract returns from its `try_*` entry points.
@@ -81,5 +86,48 @@ impl Vault {
             .ok_or(VaultError::NotInitialized)?;
         owner.require_auth();
         Self::withdraw(env, amount)
+    }
+
+    pub fn set_record(env: Env, value: i128) {
+        env.storage().persistent().set(&DataKey::Record, &value);
+    }
+
+    /// Deliberately buggy: reads the record without extending its TTL, so
+    /// a long-lived record can silently expire even while still "in use".
+    pub fn touch_record(env: Env) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Record)
+            .unwrap_or(0)
+    }
+
+    /// The fixed version: extends the TTL on every read, keeping the
+    /// record alive for as long as it's actually accessed.
+    pub fn touch_record_checked(env: Env) -> i128 {
+        let value = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Record)
+            .unwrap_or(0);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Record, 5_000, 10_000);
+        value
+    }
+
+    pub fn set_temp(env: Env, value: i128) {
+        env.storage().temporary().set(&DataKey::Temp, &value);
+    }
+
+    /// Deliberately buggy: panics if the temporary entry has expired,
+    /// instead of handling its absence gracefully.
+    pub fn read_temp_unchecked(env: Env) -> i128 {
+        env.storage().temporary().get(&DataKey::Temp).unwrap()
+    }
+
+    /// The fixed version: treats an expired (missing) entry as `0`
+    /// instead of trapping.
+    pub fn read_temp_checked(env: Env) -> i128 {
+        env.storage().temporary().get(&DataKey::Temp).unwrap_or(0)
     }
 }
