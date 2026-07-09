@@ -38,7 +38,7 @@ impl TestToken {
         self.address.clone()
     }
 
-    /// The token's decimal precision. Always `7` — see [`SAC_DECIMALS`].
+    /// The token's decimal precision. Always `7`, fixed by the protocol.
     pub fn decimals(&self) -> u32 {
         SAC_DECIMALS
     }

@@ -22,6 +22,63 @@ Soroban contract repo independently rebuilds some subset of:
 `soroban-testkit` is that shared layer, as a dev-dependency crate plus a
 small CLI.
 
+## Example
+
+A small escrow contract, tested end to end: mint a token, release it to
+the seller, and check the event, the balances, and that no value was
+created or destroyed along the way.
+
+```
+use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env};
+use soroban_testkit::prelude::*;
+
+#[contract]
+struct Escrow;
+
+#[contractimpl]
+impl Escrow {
+    pub fn release(env: Env, token: Address, from: Address, to: Address, amount: i128) {
+        from.require_auth();
+        soroban_sdk::token::TokenClient::new(&env, &token)
+            .transfer(&from, soroban_sdk::MuxedAddress::from(to), &amount);
+        #[allow(deprecated)]
+        env.events().publish((symbol_short!("release"),), amount);
+    }
+}
+
+# fn main() {
+let env = TestEnv::new();
+let token = env.token();
+let buyer = env.address();
+let seller = env.address();
+token.mint(&buyer, 100);
+
+let escrow_id = env.env().register(Escrow, ());
+let client = EscrowClient::new(env.env(), &escrow_id);
+
+env.env().mock_all_auths();
+let (_, events) = env.events_during(|| {
+    client.release(&token.address(), &buyer, &seller, &1_000_000_000);
+});
+events
+    .from(&escrow_id)
+    .assert_emitted(symbol_short!("release"));
+
+// Each of these balance queries is itself a top-level call, so check
+// them after reading events — see EventLog's note on scope.
+token.assert_balance(&buyer, 0);
+token.assert_balance(&seller, 1_000_000_000);
+
+Conservation {
+    deposited: 1_000_000_000,
+    withdrawn: 1_000_000_000,
+    refunded: 0,
+    remaining: 0,
+}
+.assert_holds();
+# }
+```
+
 ## Status
 
 This crate is under active development. See `BUILD_SPEC.md` for the build
