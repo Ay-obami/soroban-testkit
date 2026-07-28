@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Vec};
 
 #[contracttype]
 pub enum DataKey {
@@ -129,5 +129,15 @@ impl Vault {
     /// instead of trapping.
     pub fn read_temp_checked(env: Env) -> i128 {
         env.storage().temporary().get(&DataKey::Temp).unwrap_or(0)
+    }
+
+    /// Pays `amount` to every address in `recipients`. Used by
+    /// `soroban-testkit limits` to demonstrate ramping a batch operation's
+    /// recipient count until it exceeds mainnet resource limits.
+    pub fn batch_payout(env: Env, recipients: Vec<Address>, amount: i128) -> u32 {
+        for recipient in recipients.iter() {
+            env.storage().persistent().set(&recipient, &amount);
+        }
+        recipients.len()
     }
 }

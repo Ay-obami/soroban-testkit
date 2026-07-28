@@ -79,6 +79,35 @@ Conservation {
 # }
 ```
 
+## CLI
+
+A companion binary, `soroban-testkit-cli` (installs as `soroban-testkit`),
+for things that don't belong in a dev-dependency:
+
+```sh
+# Coverage for the WASM target (wraps cargo-llvm-cov, which needs no
+# Soroban-specific flags since contract tests run natively).
+soroban-testkit coverage --format html --open
+
+# Empirically find how many recipients a batch operation can handle
+# before it exceeds mainnet resource limits.
+soroban-testkit limits --contract target/wasm32v1-none/release/my_contract.wasm \
+  --fn batch_payout --ramp recipients
+
+# Static checks: missing require_auth, unchecked i128 arithmetic,
+# storage reads with no TTL bump. Not a security product.
+soroban-testkit audit ./src --strict
+```
+
+`limits` ramps a numeric parameter directly, or generates addresses for a
+`Vec<Address>` parameter — the common "how many recipients" question.
+Every ramp attempt runs in its own subprocess: a real `.wasm` contract
+that exceeds resource limits can abort the process outright rather than
+return an error, and isolating each attempt is the only safe way to probe
+past that boundary. Ledger read/write counts and transaction size aren't
+reported (they come from a network-side simulated footprint this crate
+doesn't produce); instructions and memory, measured locally, are.
+
 ## Status
 
 This crate is under active development. See `BUILD_SPEC.md` for the build

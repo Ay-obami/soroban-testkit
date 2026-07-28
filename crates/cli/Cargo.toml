@@ -12,3 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+soroban-sdk = { workspace = true, features = ["testutils"] }
+soroban-spec = "27.0.6"
+syn = { version = "3.0.5", features = ["full", "visit"] }
+quote = "1"
+proc-macro2 = { version = "1", features = ["span-locations"] }
+walkdir = "2.5.0"
