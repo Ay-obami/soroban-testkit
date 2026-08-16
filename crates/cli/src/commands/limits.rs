@@ -2,7 +2,8 @@ use std::panic;
 use std::process::Command;
 
 use clap::Args;
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::token::StellarAssetClient;
 use soroban_sdk::xdr::{ScSpecEntry, ScSpecFunctionInputV0, ScSpecFunctionV0, ScSpecTypeDef};
 use soroban_sdk::{Address, Env, IntoVal, Symbol, Val, Vec as SVec};
 
@@ -264,6 +265,13 @@ fn load(
     let env = Env::new_with_config(soroban_sdk::testutils::EnvTestConfig {
         capture_snapshot_at_drop: false,
     });
+    // Auth is not what this command measures — it exists to find a
+    // resource ceiling, not to prove who may call the function — and each
+    // probe runs in its own throwaway process/Env, so blanket-approving
+    // auth here carries none of the AuthMatrix-correctness risk that a
+    // shared, longer-lived TestEnv would (see TestToken's mint, which
+    // deliberately does NOT do this for that reason).
+    env.mock_all_auths_allowing_non_root_auth();
     let contract_id = env.register(wasm.as_slice(), ());
 
     Ok((contract_id, env, func_spec, ramp_index))
@@ -328,14 +336,49 @@ fn default_val(
     input: &ScSpecFunctionInputV0,
 ) -> Result<Val, CliError> {
     match type_ {
+        // A parameter literally named `token` is, by overwhelming Soroban
+        // convention, a token contract address — and a batch/payout-style
+        // function will call transfer() on it and needs `admin` to hold a
+        // real balance, not just a syntactically valid address. Deploying
+        // a funded Stellar Asset Contract for this one case is a
+        // name-based heuristic, not a semantic guarantee, but it's what
+        // makes `limits` usable against a real payout contract at all
+        // (verified against sororail-contracts' batch_payout, whose
+        // execute_equal(funder, token, recipients, amount_each) is
+        // exactly this shape).
+        ScSpecTypeDef::Address if input.name.to_utf8_string_lossy() == "token" => {
+            let issuer = Address::generate(env);
+            let sac = env.register_stellar_asset_contract_v2(issuer.clone());
+            let token_address = sac.address();
+            let amount = i128::MAX / 2;
+            StellarAssetClient::new(env, &token_address)
+                .mock_auths(&[MockAuth {
+                    address: &issuer,
+                    invoke: &MockAuthInvoke {
+                        contract: &token_address,
+                        fn_name: "mint",
+                        args: (admin.clone(), amount).into_val(env),
+                        sub_invokes: &[],
+                    },
+                }])
+                .mint(admin, &amount);
+            Ok(token_address.into_val(env))
+        }
         ScSpecTypeDef::Address => Ok(admin.into_val(env)),
         ScSpecTypeDef::Bool => Ok(false.into_val(env)),
-        ScSpecTypeDef::U32 => Ok(0u32.into_val(env)),
-        ScSpecTypeDef::I32 => Ok(0i32.into_val(env)),
-        ScSpecTypeDef::U64 => Ok(0u64.into_val(env)),
-        ScSpecTypeDef::I64 => Ok(0i64.into_val(env)),
-        ScSpecTypeDef::U128 => Ok(0u128.into_val(env)),
-        ScSpecTypeDef::I128 => Ok(0i128.into_val(env)),
+        // 1, not 0: verified against sororail-contracts' batch_payout,
+        // whose execute_equal(..., amount_each: i128) requires a positive
+        // amount and rejects 0 with its own InvalidAmount error before
+        // any resource-limit-relevant work happens. There's no default
+        // that's safe for every contract's validation rules, but 1 is
+        // the smaller mistake: far more contracts reject a non-positive
+        // amount than reject exactly 1.
+        ScSpecTypeDef::U32 => Ok(1u32.into_val(env)),
+        ScSpecTypeDef::I32 => Ok(1i32.into_val(env)),
+        ScSpecTypeDef::U64 => Ok(1u64.into_val(env)),
+        ScSpecTypeDef::I64 => Ok(1i64.into_val(env)),
+        ScSpecTypeDef::U128 => Ok(1u128.into_val(env)),
+        ScSpecTypeDef::I128 => Ok(1i128.into_val(env)),
         ScSpecTypeDef::Symbol => Ok(Symbol::new(env, "x").into_val(env)),
         ScSpecTypeDef::String => Ok(soroban_sdk::String::from_str(env, "").into_val(env)),
         ScSpecTypeDef::Bytes => Ok(soroban_sdk::Bytes::new(env).into_val(env)),
