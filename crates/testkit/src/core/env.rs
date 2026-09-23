@@ -1078,6 +1078,43 @@ mod tests {
         );
     }
 
+    // Regression test for issue #26: independently created `TestEnv` instances
+    // must not share or leak any state — ledger clock, ledger sequence, or
+    // address-generation counter — between them.
+    #[test]
+    fn independently_created_instances_are_fully_isolated() {
+        let a = TestEnv::new();
+        let b = TestEnv::new();
+
+        // Capture b's baseline before touching a.
+        let b_sequence_before = b.env().ledger().get().sequence_number;
+        let b_timestamp_before = b.env().ledger().get().timestamp;
+
+        // Mutate a's ledger clock through the SDK directly.
+        a.env().ledger().set_sequence_number(77_777);
+        a.env().ledger().set_timestamp(999_999);
+
+        // b must observe none of a's mutations.
+        assert_eq!(
+            b.env().ledger().get().sequence_number,
+            b_sequence_before,
+            "mutating a's sequence must not affect b"
+        );
+        assert_eq!(
+            b.env().ledger().get().timestamp,
+            b_timestamp_before,
+            "mutating a's timestamp must not affect b"
+        );
+
+        // Addresses from each environment must be independent of each other.
+        let addr_from_a = a.address();
+        let addr_from_b = b.address();
+        assert_ne!(
+            addr_from_a, addr_from_b,
+            "addresses generated from independent environments must differ"
+        );
+    }
+
     #[test]
     fn with_seed_is_reproducible_across_runs() {
         let a = TestEnv::with_seed(42);
