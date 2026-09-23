@@ -18,6 +18,33 @@ use crate::core::{TestEnv, TestkitError};
 /// meaningfully, update this constant — or, for a single test or fixture,
 /// override it with [`TestEnv::with_ledger_close_interval`] — rather than
 /// working around it at call sites.
+///
+/// # Source of the value
+///
+/// The number is chosen and maintained by this crate; it is **not** read
+/// from `soroban-sdk` or from a network at runtime. The SDK's test
+/// environment models a ledger as a `timestamp` and a `sequence_number`
+/// (both start at `0`) and exposes no close interval, so the relationship
+/// between the two — one ledger per this many seconds — is supplied here.
+/// It approximates the average spacing of the `closeTime` values in
+/// consecutive ledger headers (see the [ledger header
+/// documentation](https://developers.stellar.org/docs/learn/encyclopedia/network-configuration/ledger-headers#close-time)).
+/// It was last checked against `soroban-sdk` 27.0.6; re-check it whenever
+/// the SDK is upgraded, since a future SDK may start exposing the interval.
+///
+/// The constant must be non-zero: [`TestEnv::with_ledger_close_interval`]
+/// rejects a zero override, and the default has to satisfy the same rule.
+///
+/// # Example
+///
+/// ```
+/// use soroban_testkit::core::TestEnv;
+/// use soroban_testkit::ledger::LEDGER_CLOSE_TIME_SECS;
+///
+/// // With no override, this constant is the interval in effect.
+/// let env = TestEnv::new();
+/// assert_eq!(env.ledger_close_interval(), LEDGER_CLOSE_TIME_SECS);
+/// ```
 pub const LEDGER_CLOSE_TIME_SECS: u64 = 5;
 
 const SECS_PER_MINUTE: u64 = 60;
@@ -72,6 +99,13 @@ impl TestEnv {
     /// The number of seconds each ledger takes to close in this
     /// environment: [`LEDGER_CLOSE_TIME_SECS`] unless overridden with
     /// [`TestEnv::with_ledger_close_interval`].
+    ///
+    /// The value is resolved on every call, in this order: the environment's
+    /// own override, then the crate-wide [`LEDGER_CLOSE_TIME_SECS`]. Neither
+    /// comes from `soroban-sdk` or the network (see the constant's docs for
+    /// why). An override survives [`TestEnv::clone_config`] and
+    /// [`TestEnv::reset`]; an environment with no override keeps following
+    /// the crate default.
     ///
     /// # Example
     ///
@@ -497,6 +531,25 @@ mod tests {
         );
     }
 
+    // The zero check lives in `with_ledger_close_interval`, so nothing else
+    // stops the default from being edited to 0 — which would make every
+    // `advance` divide by zero.
+    #[test]
+    fn default_close_interval_is_non_zero() {
+        assert_ne!(TestEnv::new().ledger_close_interval(), 0);
+    }
+
+    #[test]
+    fn interval_resolves_from_the_override_then_the_crate_default() {
+        let plain = TestEnv::new();
+        assert_eq!(plain.close_interval_override(), None);
+        assert_eq!(plain.ledger_close_interval(), LEDGER_CLOSE_TIME_SECS);
+
+        let configured = TestEnv::new().with_ledger_close_interval(9);
+        assert_eq!(configured.close_interval_override(), Some(9));
+        assert_eq!(configured.ledger_close_interval(), 9);
+    }
+
     #[test]
     fn custom_interval_changes_how_advance_maps_time_to_ledgers() {
         let env = TestEnv::new().with_ledger_close_interval(2);
@@ -685,5 +738,295 @@ mod tests {
         let result = panic::catch_unwind(AssertUnwindSafe(|| env.advance_days(u64::MAX)));
         assert!(result.is_err());
         assert_eq!((env.now(), env.sequence()), (now, sequence));
+    }
+
+    // --- property tests: timestamp vs. sequence ---------------------------
+    //
+    // These check relationships that must hold for *every* input rather than
+    // hand-picked ones. `proptest` is not a dependency of this crate, so each
+    // property runs `CASES` inputs from a small deterministic generator
+    // instead. Every failure message names its case and inputs, and the
+    // generator is seeded from the case number alone, so a failure reproduces
+    // on every run.
+    //
+    // Notation in the failure messages: `Δt` is the change in `now()` and
+    // `Δs` the change in `sequence()`.
+
+    const CASES: u64 = 64;
+
+    /// SplitMix64: tiny, dependency-free, and well distributed even for
+    /// consecutive seeds.
+    struct Rng(u64);
+
+    impl Rng {
+        /// The generator for `case` of the property identified by `salt`.
+        fn for_case(salt: u64, case: u64) -> Self {
+            Rng(salt.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ case)
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+
+        /// A value in `lo..=hi` (`hi` must be well below `u64::MAX`).
+        fn range(&mut self, lo: u64, hi: u64) -> u64 {
+            lo + self.next_u64() % (hi - lo + 1)
+        }
+    }
+
+    /// `CASES` numbered generators for one property; `salt` keeps different
+    /// properties from drawing the same numbers.
+    fn cases(salt: u64) -> impl Iterator<Item = (u64, Rng)> {
+        (0..CASES).map(move |case| (case, Rng::for_case(salt, case)))
+    }
+
+    /// A random close interval, in seconds.
+    fn random_interval(rng: &mut Rng) -> u64 {
+        rng.range(1, 120)
+    }
+
+    fn clock(env: &TestEnv) -> (u64, u32) {
+        (env.now(), env.sequence())
+    }
+
+    fn env_with(interval: u64) -> TestEnv {
+        TestEnv::new().with_ledger_close_interval(interval)
+    }
+
+    #[test]
+    fn property_advance_moves_time_exactly_and_sequence_by_the_ceiling() {
+        for (case, mut rng) in cases(1) {
+            let interval = random_interval(&mut rng);
+            let secs = rng.range(0, 1_000_000);
+            let env = env_with(interval);
+            let (now, sequence) = clock(&env);
+
+            env.advance(Duration::from_secs(secs));
+
+            let ctx = format!("case {case}: interval={interval}s, advance={secs}s");
+            assert_eq!(env.now() - now, secs, "Δt: {ctx}");
+            assert_eq!(
+                u64::from(env.sequence() - sequence),
+                secs.div_ceil(interval),
+                "Δs: {ctx}"
+            );
+        }
+    }
+
+    #[test]
+    fn property_advance_ledgers_moves_sequence_exactly_and_time_by_n_intervals() {
+        for (case, mut rng) in cases(2) {
+            let interval = random_interval(&mut rng);
+            let n = rng.range(0, 100_000) as u32;
+            let env = env_with(interval);
+            let (now, sequence) = clock(&env);
+
+            env.advance_ledgers(n);
+
+            let ctx = format!("case {case}: interval={interval}s, ledgers={n}");
+            assert_eq!(env.sequence() - sequence, n, "Δs: {ctx}");
+            assert_eq!(env.now() - now, u64::from(n) * interval, "Δt: {ctx}");
+        }
+    }
+
+    #[test]
+    fn property_a_whole_number_of_intervals_is_the_same_as_that_many_ledgers() {
+        for (case, mut rng) in cases(3) {
+            let interval = random_interval(&mut rng);
+            let n = rng.range(0, 100_000);
+            let by_time = env_with(interval);
+            let by_ledgers = env_with(interval);
+
+            by_time.advance(Duration::from_secs(n * interval));
+            by_ledgers.advance_ledgers(n as u32);
+
+            assert_eq!(
+                clock(&by_time),
+                clock(&by_ledgers),
+                "case {case}: interval={interval}s, ledgers={n}"
+            );
+        }
+    }
+
+    #[test]
+    fn property_splitting_an_advance_keeps_time_and_adds_at_most_one_ledger() {
+        for (case, mut rng) in cases(4) {
+            let interval = random_interval(&mut rng);
+            let (a, b) = (rng.range(0, 500_000), rng.range(0, 500_000));
+            let split = env_with(interval);
+            let whole = env_with(interval);
+
+            split.advance(Duration::from_secs(a));
+            split.advance(Duration::from_secs(b));
+            whole.advance(Duration::from_secs(a + b));
+
+            // Each part rounds up on its own, so the split can only be ahead.
+            let ctx = format!("case {case}: interval={interval}s, parts={a}s+{b}s");
+            assert_eq!(split.now(), whole.now(), "timestamp: {ctx}");
+            assert!(split.sequence() >= whole.sequence(), "split behind: {ctx}");
+            assert!(
+                split.sequence() - whole.sequence() <= 1,
+                "split more than one ledger ahead: {ctx}"
+            );
+        }
+    }
+
+    #[test]
+    fn property_splitting_an_advance_in_whole_intervals_loses_nothing() {
+        for (case, mut rng) in cases(5) {
+            let interval = random_interval(&mut rng);
+            let (a, b) = (rng.range(0, 50_000), rng.range(0, 50_000));
+            let split = env_with(interval);
+            let whole = env_with(interval);
+
+            split.advance(Duration::from_secs(a * interval));
+            split.advance(Duration::from_secs(b * interval));
+            whole.advance(Duration::from_secs((a + b) * interval));
+
+            assert_eq!(
+                clock(&split),
+                clock(&whole),
+                "case {case}: interval={interval}s, parts={a}+{b} ledgers"
+            );
+        }
+    }
+
+    #[test]
+    fn property_warp_to_lands_on_the_target_and_advances_the_sequence_to_match() {
+        for (case, mut rng) in cases(6) {
+            let interval = random_interval(&mut rng);
+            let env = env_with(interval);
+            env.advance(Duration::from_secs(rng.range(0, 100_000)));
+            let (now, sequence) = clock(&env);
+            let delta = rng.range(0, 1_000_000);
+
+            env.warp_to(now + delta);
+
+            let ctx = format!("case {case}: interval={interval}s, from={now}, delta={delta}s");
+            assert_eq!(env.now(), now + delta, "timestamp: {ctx}");
+            assert_eq!(
+                u64::from(env.sequence() - sequence),
+                delta.div_ceil(interval),
+                "Δs: {ctx}"
+            );
+
+            // Warping to the time it already is must change nothing.
+            let settled = clock(&env);
+            env.warp_to(env.now());
+            assert_eq!(clock(&env), settled, "warp to now: {ctx}");
+        }
+    }
+
+    #[test]
+    fn property_warp_to_any_past_timestamp_is_rejected_and_changes_nothing() {
+        for (case, mut rng) in cases(7) {
+            let interval = random_interval(&mut rng);
+            let env = env_with(interval);
+            env.advance(Duration::from_secs(rng.range(1, 100_000)));
+            let (now, sequence) = clock(&env);
+            let past = rng.range(0, now - 1);
+
+            let result = panic::catch_unwind(AssertUnwindSafe(|| env.warp_to(past)));
+
+            let ctx = format!("case {case}: interval={interval}s, now={now}, target={past}");
+            assert!(result.is_err(), "warp into the past was accepted: {ctx}");
+            assert_eq!(clock(&env), (now, sequence), "clock moved: {ctx}");
+        }
+    }
+
+    #[test]
+    fn property_at_restores_time_and_sequence_whatever_the_target_or_closure_does() {
+        for (case, mut rng) in cases(8) {
+            let interval = random_interval(&mut rng);
+            let env = env_with(interval);
+            env.advance(Duration::from_secs(rng.range(0, 100_000)));
+            let before = clock(&env);
+            let target = rng.range(0, 10_000_000);
+            let skipped = rng.range(0, 100_000);
+
+            let observed = env.at(target, || env.now());
+            let ctx = format!("case {case}: interval={interval}s, target={target}");
+            assert_eq!(observed, target, "timestamp inside at: {ctx}");
+            assert_eq!(clock(&env), before, "clock after at: {ctx}");
+
+            // Even a closure that moves the clock itself is rolled back.
+            env.at(target, || env.advance(Duration::from_secs(skipped)));
+            assert_eq!(
+                clock(&env),
+                before,
+                "clock after at with an advance of {skipped}s inside: {ctx}"
+            );
+        }
+    }
+
+    #[test]
+    fn property_calendar_helpers_match_advance_by_the_same_number_of_seconds() {
+        let helpers: [(&str, u64, fn(&TestEnv, u64)); 3] = [
+            ("advance_minutes", SECS_PER_MINUTE, TestEnv::advance_minutes),
+            ("advance_hours", SECS_PER_HOUR, TestEnv::advance_hours),
+            ("advance_days", SECS_PER_DAY, TestEnv::advance_days),
+        ];
+        for (case, mut rng) in cases(9) {
+            let interval = random_interval(&mut rng);
+            let count = rng.range(0, 10_000);
+            for (name, unit, helper) in helpers {
+                let by_helper = env_with(interval);
+                let by_advance = env_with(interval);
+
+                helper(&by_helper, count);
+                by_advance.advance(Duration::from_secs(count * unit));
+
+                assert_eq!(
+                    clock(&by_helper),
+                    clock(&by_advance),
+                    "case {case}: {name}({count}) at {interval}s per ledger"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn property_any_run_of_clock_moves_stays_monotonic_and_proportional() {
+        for (case, mut rng) in cases(10) {
+            let interval = random_interval(&mut rng);
+            let env = env_with(interval);
+            let (start_now, start_sequence) = clock(&env);
+            let (mut prev_now, mut prev_sequence) = (start_now, start_sequence);
+            // Moves that round a duration up to whole ledgers, each of which
+            // can leave the sequence up to `interval - 1` seconds ahead.
+            let mut rounding_moves = 0;
+
+            for step in 0..rng.range(1, 12) {
+                let op = rng.range(0, 3);
+                match op {
+                    0 => env.advance(Duration::from_secs(rng.range(0, 100_000))),
+                    1 => env.advance_ledgers(rng.range(0, 10_000) as u32),
+                    2 => env.warp_to(env.now() + rng.range(0, 100_000)),
+                    _ => env.advance_minutes(rng.range(0, 1_000)),
+                }
+                if op != 1 {
+                    rounding_moves += 1;
+                }
+
+                let (now, sequence) = clock(&env);
+                let ctx = format!("case {case}: interval={interval}s, step={step}, op={op}");
+                assert!(now >= prev_now, "timestamp went backwards: {ctx}");
+                assert!(sequence >= prev_sequence, "sequence went backwards: {ctx}");
+                // Ledgers never lag the elapsed time, and only run ahead of it
+                // by the rounding each duration-based move can add.
+                let elapsed = now - start_now;
+                let ledger_secs = u64::from(sequence - start_sequence) * interval;
+                assert!(ledger_secs >= elapsed, "sequence lags time: {ctx}");
+                assert!(
+                    ledger_secs <= elapsed + rounding_moves * (interval - 1),
+                    "sequence ahead of time by more than rounding allows: {ctx}"
+                );
+                (prev_now, prev_sequence) = (now, sequence);
+            }
+        }
     }
 }
