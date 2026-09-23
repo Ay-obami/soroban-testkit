@@ -642,7 +642,6 @@ mod tests {
         assert_eq!(env.now(), before);
     }
 
- improve-ledger-clock-handling
     // --- advance overflow rejection and checked variants ----------------
 
     // Regression: a panic inside a *nested* `at` must unwind through both
@@ -702,7 +701,6 @@ mod tests {
     }
 
     // --- advance overflow rejection -------------------------------------
-  main
 
     // Regression: `ledgers as u32` used to truncate, so a duration worth
     // exactly 2^32 ledgers advanced the timestamp by ~680 years while
@@ -1321,6 +1319,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::type_complexity)]
     fn property_calendar_helpers_match_advance_by_the_same_number_of_seconds() {
         let helpers: [(&str, u64, fn(&TestEnv, u64)); 3] = [
             ("advance_minutes", SECS_PER_MINUTE, TestEnv::advance_minutes),

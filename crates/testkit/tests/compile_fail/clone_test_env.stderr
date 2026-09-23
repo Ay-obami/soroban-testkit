@@ -1,0 +1,5 @@
+error[E0599]: no method named `clone` found for struct `TestEnv` in the current scope
+  --> tests/compile_fail/clone_test_env.rs:12:21
+   |
+12 |     let _copy = env.clone(); // ERROR: `TestEnv` does not implement `Clone`
+   |                     ^^^^^ method not found in `TestEnv`
