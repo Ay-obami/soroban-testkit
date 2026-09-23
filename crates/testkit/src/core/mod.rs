@@ -5,5 +5,5 @@
 mod env;
 mod error;
 
-pub use env::{Actor, AddressIter, TestEnv, MAX_ADDRESS_BATCH_SIZE};
+pub use env::{Actor, AddressIter, TestEnv, TestFixture, MAX_ADDRESS_BATCH_SIZE};
 pub use error::TestkitError;

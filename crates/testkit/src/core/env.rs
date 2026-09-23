@@ -36,6 +36,67 @@ pub struct TestEnv {
     close_interval_secs: Option<u64>,
 }
 
+/// Reusable test setup built around a [`TestEnv`].
+///
+/// Implement this trait for a fixture struct that owns a `TestEnv` plus the
+/// addresses, contracts, or tokens a group of tests share. The provided
+/// constructors keep environment creation consistent and make seeded fixtures
+/// reproducible without duplicating setup boilerplate.
+///
+/// # Example
+///
+/// ```
+/// use soroban_testkit::core::{TestEnv, TestFixture};
+/// use soroban_sdk::Address;
+///
+/// struct Fixture {
+///     env: TestEnv,
+///     alice: Address,
+/// }
+///
+/// impl TestFixture for Fixture {
+///     fn from_env(env: TestEnv) -> Self {
+///         let alice = env.address();
+///         Self { env, alice }
+///     }
+///
+///     fn test_env(&self) -> &TestEnv {
+///         &self.env
+///     }
+/// }
+///
+/// let a = Fixture::with_seed(7);
+/// let b = Fixture::with_seed(7);
+/// assert_eq!(a.alice, b.alice);
+/// ```
+pub trait TestFixture: Sized {
+    /// Build the fixture from an already-created test environment.
+    fn from_env(env: TestEnv) -> Self;
+
+    /// Borrow the environment owned by this fixture.
+    fn test_env(&self) -> &TestEnv;
+
+    /// Build the fixture around a fresh [`TestEnv`].
+    fn new() -> Self {
+        Self::from_env(TestEnv::new())
+    }
+
+    /// Build the fixture around a reproducibly seeded [`TestEnv`].
+    fn with_seed(seed: u64) -> Self {
+        Self::from_env(TestEnv::with_seed(seed))
+    }
+}
+
+impl TestFixture for TestEnv {
+    fn from_env(env: TestEnv) -> Self {
+        env
+    }
+
+    fn test_env(&self) -> &TestEnv {
+        self
+    }
+}
+
 impl TestEnv {
     /// Create a fresh environment with a deterministic starting ledger.
     ///
@@ -690,6 +751,56 @@ impl<'a> std::iter::FusedIterator for AddressIter<'a> {}
 mod tests {
     use super::*;
     use soroban_sdk::testutils::Ledger;
+
+    struct Fixture {
+        env: TestEnv,
+        first: Address,
+    }
+
+    impl TestFixture for Fixture {
+        fn from_env(env: TestEnv) -> Self {
+            let first = env.address();
+            Self { env, first }
+        }
+
+        fn test_env(&self) -> &TestEnv {
+            &self.env
+        }
+    }
+
+    #[test]
+    fn fixture_with_seed_is_reproducible() {
+        let a = Fixture::with_seed(42);
+        let b = Fixture::with_seed(42);
+        assert_eq!(a.first, b.first);
+        assert_eq!(a.test_env().seed(), 42);
+        assert_eq!(b.test_env().seed(), 42);
+    }
+
+    #[test]
+    fn fixture_new_environments_are_isolated() {
+        let a = Fixture::new();
+        let b = Fixture::new();
+        a.test_env().env().ledger().set_sequence_number(9_999);
+        assert_ne!(a.test_env().sequence(), b.test_env().sequence());
+    }
+
+    #[test]
+    fn fixture_accepts_zero_seed_and_existing_env_configuration() {
+        let zero = Fixture::with_seed(0);
+        assert_eq!(zero.test_env().seed(), 0);
+
+        let configured = Fixture::from_env(TestEnv::with_seed(7).with_ledger_close_interval(2));
+        assert_eq!(configured.test_env().seed(), 7);
+        assert_eq!(configured.test_env().ledger_close_interval(), 2);
+    }
+
+    #[test]
+    fn test_env_itself_implements_fixture() {
+        let env = <TestEnv as TestFixture>::with_seed(11);
+        assert_eq!(env.seed(), 11);
+        assert!(std::ptr::eq(<TestEnv as TestFixture>::test_env(&env), &env));
+    }
 
     #[test]
     fn new_twice_produces_independent_environments() {
