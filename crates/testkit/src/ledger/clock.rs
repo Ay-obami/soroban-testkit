@@ -115,7 +115,36 @@ impl TestEnv {
     /// assert_eq!(env.now(), before + 60);
     /// ```
     pub fn advance(&self, duration: Duration) {
-        self.advance_secs(duration.as_secs());
+        if let Err(e) = self.try_advance(duration) {
+            panic!("{}", e);
+        }
+    }
+
+    /// Attempt to advance the ledger clock by a wall-clock duration,
+    /// advancing the ledger sequence proportionally (per
+    /// [`TestEnv::ledger_close_interval`]).
+    ///
+    /// Only whole seconds are applied; any sub-second part of `duration` is
+    /// ignored, because ledger timestamps are whole unix seconds.
+    ///
+    /// Returns `Err(TestkitError::Misuse)` if the advance would overflow
+    /// ledger arithmetic — the matching ledger count does not fit the
+    /// `u32` sequence number, or the new sequence number or timestamp would
+    /// pass its type's maximum. The clock is left unchanged on error.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    /// use std::time::Duration;
+    ///
+    /// let env = TestEnv::new();
+    /// let before = env.now();
+    /// env.try_advance(Duration::from_secs(60)).expect("advance should succeed");
+    /// assert_eq!(env.now(), before + 60);
+    /// ```
+    pub fn try_advance(&self, duration: Duration) -> Result<(), TestkitError> {
+        self.try_advance_secs(duration.as_secs())
     }
 
     /// Advance the ledger clock by `minutes` minutes (60 seconds each).
@@ -141,7 +170,35 @@ impl TestEnv {
     /// assert_eq!(env.now(), before + 300);
     /// ```
     pub fn advance_minutes(&self, minutes: u64) {
-        self.advance_secs(calendar_secs("advance_minutes", minutes, SECS_PER_MINUTE));
+        if let Err(e) = self.try_advance_minutes(minutes) {
+            panic!("{}", e);
+        }
+    }
+
+    /// Attempt to advance the ledger clock by `minutes` minutes (60 seconds
+    /// each).
+    ///
+    /// Minutes are fixed-length: this is plain unix-time arithmetic with no
+    /// leap seconds or time zones, matching how ledger timestamps work. See
+    /// [`TestEnv::try_advance`] for how the sequence follows.
+    ///
+    /// Returns `Err(TestkitError::Misuse)` if `minutes` overflows a `u64`
+    /// number of seconds, or if the advance would overflow ledger arithmetic
+    /// (see [`TestEnv::try_advance`]). The clock is left unchanged on error.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let before = env.now();
+    /// env.try_advance_minutes(5).expect("advance should succeed");
+    /// assert_eq!(env.now(), before + 300);
+    /// ```
+    pub fn try_advance_minutes(&self, minutes: u64) -> Result<(), TestkitError> {
+        let secs = calendar_secs("try_advance_minutes", minutes, SECS_PER_MINUTE)?;
+        self.try_advance_secs(secs)
     }
 
     /// Advance the ledger clock by `hours` hours (3,600 seconds each).
@@ -167,7 +224,35 @@ impl TestEnv {
     /// assert_eq!(env.now(), before + 7_200);
     /// ```
     pub fn advance_hours(&self, hours: u64) {
-        self.advance_secs(calendar_secs("advance_hours", hours, SECS_PER_HOUR));
+        if let Err(e) = self.try_advance_hours(hours) {
+            panic!("{}", e);
+        }
+    }
+
+    /// Attempt to advance the ledger clock by `hours` hours (3,600 seconds
+    /// each).
+    ///
+    /// Hours are fixed-length: this is plain unix-time arithmetic with no
+    /// leap seconds or time zones, matching how ledger timestamps work. See
+    /// [`TestEnv::try_advance`] for how the sequence follows.
+    ///
+    /// Returns `Err(TestkitError::Misuse)` if `hours` overflows a `u64`
+    /// number of seconds, or if the advance would overflow ledger arithmetic
+    /// (see [`TestEnv::try_advance`]). The clock is left unchanged on error.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let before = env.now();
+    /// env.try_advance_hours(2).expect("advance should succeed");
+    /// assert_eq!(env.now(), before + 7_200);
+    /// ```
+    pub fn try_advance_hours(&self, hours: u64) -> Result<(), TestkitError> {
+        let secs = calendar_secs("try_advance_hours", hours, SECS_PER_HOUR)?;
+        self.try_advance_secs(secs)
     }
 
     /// Advance the ledger clock by `days` days (86,400 seconds each).
@@ -194,11 +279,46 @@ impl TestEnv {
     /// assert_eq!(env.now(), before + 30 * 86_400);
     /// ```
     pub fn advance_days(&self, days: u64) {
-        self.advance_secs(calendar_secs("advance_days", days, SECS_PER_DAY));
+        if let Err(e) = self.try_advance_days(days) {
+            panic!("{}", e);
+        }
+    }
+
+    /// Attempt to advance the ledger clock by `days` days (86,400 seconds
+    /// each).
+    ///
+    /// Days are fixed-length: this is plain unix-time arithmetic with no
+    /// leap seconds, daylight-saving shifts, or time zones, matching how
+    /// ledger timestamps work. See [`TestEnv::try_advance`] for how the
+    /// sequence follows.
+    ///
+    /// Returns `Err(TestkitError::Misuse)` if `days` overflows a `u64`
+    /// number of seconds, or if the advance would overflow ledger arithmetic
+    /// (see [`TestEnv::try_advance`]). The clock is left unchanged on error.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let before = env.now();
+    /// env.try_advance_days(30).expect("advance should succeed");
+    /// assert_eq!(env.now(), before + 30 * 86_400);
+    /// ```
+    pub fn try_advance_days(&self, days: u64) -> Result<(), TestkitError> {
+        let secs = calendar_secs("try_advance_days", days, SECS_PER_DAY)?;
+        self.try_advance_secs(secs)
     }
 
     /// Advance by exactly `n` ledgers, moving the timestamp forward by
     /// `n * `[`TestEnv::ledger_close_interval`].
+    ///
+    /// # Panics
+    ///
+    /// Panics with a [`TestkitError::Misuse`] if the advance would overflow
+    /// ledger arithmetic — the sequence number or timestamp would pass their
+    /// type's maximum. The clock is left unchanged.
     ///
     /// # Example
     ///
@@ -211,14 +331,52 @@ impl TestEnv {
     /// assert_eq!(env.sequence(), before + 10);
     /// ```
     pub fn advance_ledgers(&self, n: u32) {
+        if let Err(e) = self.try_advance_ledgers(n) {
+            panic!("{}", e);
+        }
+    }
+
+    /// Attempt to advance by exactly `n` ledgers, moving the timestamp
+    /// forward by `n * `[`TestEnv::ledger_close_interval`].
+    ///
+    /// Returns `Err(TestkitError::Misuse)` if the advance would overflow
+    /// ledger arithmetic — the sequence number or timestamp would pass their
+    /// type's maximum. The clock is left unchanged on error.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let before = env.sequence();
+    /// env.try_advance_ledgers(10).expect("advance should succeed");
+    /// assert_eq!(env.sequence(), before + 10);
+    /// ```
+    pub fn try_advance_ledgers(&self, n: u32) -> Result<(), TestkitError> {
         let info = self.env().ledger().get();
-        self.env()
-            .ledger()
-            .set_sequence_number(info.sequence_number.saturating_add(n));
-        self.env().ledger().set_timestamp(
-            info.timestamp
-                .saturating_add((n as u64).saturating_mul(self.ledger_close_interval())),
-        );
+        let interval = self.ledger_close_interval();
+        let time_delta = (n as u64).checked_mul(interval).ok_or_else(|| {
+            TestkitError::Misuse(format!(
+                "advancing {n} ledgers at {interval}s per ledger overflows ledger arithmetic"
+            ))
+        })?;
+        let target_sequence = info.sequence_number.checked_add(n).ok_or_else(|| {
+            TestkitError::Misuse(format!(
+                "advancing by {n} ledgers would overflow the sequence number (currently at {})",
+                info.sequence_number
+            ))
+        })?;
+        let target_timestamp = info.timestamp.checked_add(time_delta).ok_or_else(|| {
+            TestkitError::Misuse(format!(
+                "advancing by {n} ledgers would overflow the timestamp (currently at {})",
+                info.timestamp
+            ))
+        })?;
+
+        self.env().ledger().set_sequence_number(target_sequence);
+        self.env().ledger().set_timestamp(target_timestamp);
+        Ok(())
     }
 
     /// Jump to an absolute unix timestamp, advancing the sequence in
@@ -241,17 +399,37 @@ impl TestEnv {
     /// assert_eq!(env.now(), 3600);
     /// ```
     pub fn warp_to(&self, timestamp: u64) {
+        if let Err(e) = self.try_warp_to(timestamp) {
+            panic!("{}", e);
+        }
+    }
+
+    /// Attempt to jump to an absolute unix timestamp, advancing the sequence
+    /// in proportion to the elapsed time.
+    ///
+    /// Returns `Err(TestkitError::Misuse)` if `timestamp` is before the
+    /// environment's current time — the ledger clock cannot run backwards —
+    /// or if the jump would overflow ledger arithmetic (see
+    /// [`TestEnv::try_advance`]). The clock is left unchanged on error.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// env.try_warp_to(env.now() + 3600).expect("warp should succeed");
+    /// assert_eq!(env.now(), 3600);
+    /// ```
+    pub fn try_warp_to(&self, timestamp: u64) -> Result<(), TestkitError> {
         let now = self.now();
         if timestamp < now {
-            panic!(
-                "{}",
-                TestkitError::Misuse(format!(
-                    "warp_to({timestamp}) is before the current ledger time ({now}); \
-                     the ledger clock cannot run backwards"
-                ))
-            );
+            return Err(TestkitError::Misuse(format!(
+                "warp_to({timestamp}) is before the current ledger time ({now}); \
+                 the ledger clock cannot run backwards"
+            )));
         }
-        self.advance(Duration::from_secs(timestamp - now));
+        self.try_advance(Duration::from_secs(timestamp - now))
     }
 
     /// The current ledger timestamp (unix seconds).
@@ -299,42 +477,45 @@ impl TestEnv {
     ///
     /// Both new values are computed with overflow checks before either is
     /// written, so a rejected advance leaves the clock untouched.
-    fn advance_secs(&self, secs: u64) {
+    fn try_advance_secs(&self, secs: u64) -> Result<(), TestkitError> {
         let info = self.env().ledger().get();
         let interval = self.ledger_close_interval();
         let ledgers = secs.div_ceil(interval);
-        let target = u32::try_from(ledgers)
+        let sequence = u32::try_from(ledgers)
             .ok()
             .and_then(|ledgers| info.sequence_number.checked_add(ledgers))
-            .zip(info.timestamp.checked_add(secs));
-        let Some((sequence, timestamp)) = target else {
-            panic!(
-                "{}",
+            .ok_or_else(|| {
                 TestkitError::Misuse(format!(
                     "advancing the ledger clock by {secs}s overflows ledger arithmetic: \
-                     at {interval}s per ledger that is {ledgers} ledgers, but the clock is \
-                     at sequence {} (a u32) and timestamp {} (a u64); use a shorter duration",
-                    info.sequence_number, info.timestamp
+                 at {interval}s per ledger that is {ledgers} ledgers, but the clock is \
+                 at sequence {} (a u32); use a shorter duration",
+                    info.sequence_number
                 ))
-            );
-        };
+            })?;
+        let timestamp = info.timestamp.checked_add(secs).ok_or_else(|| {
+            TestkitError::Misuse(format!(
+                "advancing the ledger clock by {secs}s overflows ledger arithmetic: \
+                 at {interval}s per ledger that is {ledgers} ledgers, but the clock is \
+                 at timestamp {} (a u64); use a shorter duration",
+                info.timestamp
+            ))
+        })?;
+
         self.env().ledger().set_timestamp(timestamp);
         self.env().ledger().set_sequence_number(sequence);
+        Ok(())
     }
 }
 
 /// Convert `count` calendar units of `secs_per_unit` seconds into seconds,
-/// panicking with a [`TestkitError::Misuse`] naming `helper` if the product
+/// returning a [`TestkitError::Misuse`] naming `helper` if the product
 /// does not fit in a `u64`.
-fn calendar_secs(helper: &str, count: u64, secs_per_unit: u64) -> u64 {
-    count.checked_mul(secs_per_unit).unwrap_or_else(|| {
-        panic!(
-            "{}",
-            TestkitError::Misuse(format!(
-                "{helper}({count}) overflows ledger arithmetic: \
-                 {count} * {secs_per_unit}s does not fit in a u64 number of seconds"
-            ))
-        )
+fn calendar_secs(helper: &str, count: u64, secs_per_unit: u64) -> Result<u64, TestkitError> {
+    count.checked_mul(secs_per_unit).ok_or_else(|| {
+        TestkitError::Misuse(format!(
+            "{helper}({count}) overflows ledger arithmetic: \
+             {count} * {secs_per_unit}s does not fit in a u64 number of seconds"
+        ))
     })
 }
 
@@ -401,7 +582,7 @@ mod tests {
         assert_eq!(env.now(), before);
     }
 
-    // --- advance overflow rejection -------------------------------------
+    // --- advance overflow rejection and checked variants ----------------
 
     // Regression: `ledgers as u32` used to truncate, so a duration worth
     // exactly 2^32 ledgers advanced the timestamp by ~680 years while
@@ -415,10 +596,25 @@ mod tests {
     }
 
     #[test]
+    fn try_advance_rejects_a_ledger_count_that_wraps_u32_to_zero() {
+        let env = TestEnv::new();
+        let wrapping_secs = (u64::from(u32::MAX) + 1) * LEDGER_CLOSE_TIME_SECS;
+        let result = env.try_advance(Duration::from_secs(wrapping_secs));
+        assert!(result.is_err());
+    }
+
+    #[test]
     #[should_panic(expected = "overflows ledger arithmetic")]
     fn advance_rejects_the_maximum_duration() {
         let env = TestEnv::new();
         env.advance(Duration::from_secs(u64::MAX));
+    }
+
+    #[test]
+    fn try_advance_rejects_the_maximum_duration() {
+        let env = TestEnv::new();
+        let result = env.try_advance(Duration::from_secs(u64::MAX));
+        assert!(result.is_err());
     }
 
     #[test]
@@ -430,11 +626,27 @@ mod tests {
     }
 
     #[test]
+    fn try_advance_rejects_sequence_overflow() {
+        let env = TestEnv::new();
+        env.advance_ledgers(u32::MAX);
+        let result = env.try_advance(Duration::from_secs(LEDGER_CLOSE_TIME_SECS));
+        assert!(result.is_err());
+    }
+
+    #[test]
     #[should_panic(expected = "overflows ledger arithmetic")]
     fn advance_rejects_timestamp_overflow_instead_of_saturating() {
         let env = TestEnv::new();
         soroban_sdk::testutils::Ledger::set_timestamp(&env.env().ledger(), u64::MAX - 10);
         env.advance(Duration::from_secs(60));
+    }
+
+    #[test]
+    fn try_advance_rejects_timestamp_overflow() {
+        let env = TestEnv::new();
+        soroban_sdk::testutils::Ledger::set_timestamp(&env.env().ledger(), u64::MAX - 10);
+        let result = env.try_advance(Duration::from_secs(60));
+        assert!(result.is_err());
     }
 
     #[test]
@@ -464,6 +676,47 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(env.now(), now);
         assert_eq!(env.sequence(), sequence);
+    }
+
+    #[test]
+    #[should_panic(expected = "would overflow the sequence number")]
+    fn advance_ledgers_prevents_sequence_overflow() {
+        let env = TestEnv::new();
+        env.advance_ledgers(u32::MAX);
+        env.advance_ledgers(1);
+    }
+
+    #[test]
+    fn try_advance_ledgers_prevents_sequence_overflow() {
+        let env = TestEnv::new();
+        env.advance_ledgers(u32::MAX);
+        let result = env.try_advance_ledgers(1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn try_advance_ledgers_succeeds_when_valid() {
+        let env = TestEnv::new();
+        let before = env.sequence();
+        let result = env.try_advance_ledgers(10);
+        assert!(result.is_ok());
+        assert_eq!(env.sequence(), before + 10);
+    }
+
+    #[test]
+    fn try_warp_to_rejects_past_timestamp() {
+        let env = TestEnv::new();
+        env.advance(Duration::from_secs(100));
+        let result = env.try_warp_to(50);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn try_warp_to_succeeds_for_future_timestamp() {
+        let env = TestEnv::new();
+        let result = env.try_warp_to(500);
+        assert!(result.is_ok());
+        assert_eq!(env.now(), 500);
     }
 
     #[test]
@@ -660,15 +913,33 @@ mod tests {
     }
 
     #[test]
+    fn try_advance_minutes_rejects_a_count_that_overflows_seconds() {
+        let result = TestEnv::new().try_advance_minutes(u64::MAX);
+        assert!(result.is_err());
+    }
+
+    #[test]
     #[should_panic(expected = "advance_hours(18446744073709551615) overflows ledger arithmetic")]
     fn advance_hours_rejects_a_count_that_overflows_seconds() {
         TestEnv::new().advance_hours(u64::MAX);
     }
 
     #[test]
+    fn try_advance_hours_rejects_a_count_that_overflows_seconds() {
+        let result = TestEnv::new().try_advance_hours(u64::MAX);
+        assert!(result.is_err());
+    }
+
+    #[test]
     #[should_panic(expected = "advance_days(18446744073709551615) overflows ledger arithmetic")]
     fn advance_days_rejects_a_count_that_overflows_seconds() {
         TestEnv::new().advance_days(u64::MAX);
+    }
+
+    #[test]
+    fn try_advance_days_rejects_a_count_that_overflows_seconds() {
+        let result = TestEnv::new().try_advance_days(u64::MAX);
+        assert!(result.is_err());
     }
 
     #[test]
