@@ -284,6 +284,11 @@ pub struct TestEnv {
 impl TestEnv {
     /// Create a fresh environment with a deterministic starting ledger.
     ///
+    /// Every `TestEnv` starts at ledger sequence `0` and Unix timestamp `0`.
+    /// These values are set explicitly rather than inherited from the SDK's
+    /// defaults so tests can rely on them across SDK upgrades. Other ledger
+    /// parameters continue to come from the current Soroban SDK test config.
+    ///
     /// Uses a non-reproducible seed for any future randomized value
     /// generation; use [`TestEnv::with_seed`] when a test needs to be
     /// reproducible.
@@ -499,29 +504,16 @@ impl TestEnv {
         let env = Env::new_with_config(soroban_sdk::testutils::EnvTestConfig {
             capture_snapshot_at_drop: false,
         });
-        // Apply any LedgerDefaults overrides so the starting ledger is
-        // deterministic. We only mutate the fields the caller specified;
-        // unset fields keep the SDK's own defaults.
-        if defaults.timestamp.is_some()
-            || defaults.sequence_number.is_some()
-            || defaults.protocol_version.is_some()
-            || defaults.base_reserve.is_some()
-        {
-            let mut info = env.ledger().get();
-            if let Some(ts) = defaults.timestamp {
-                info.timestamp = ts;
-            }
-            if let Some(seq) = defaults.sequence_number {
-                info.sequence_number = seq;
-            }
-            if let Some(pv) = defaults.protocol_version {
-                info.protocol_version = pv;
-            }
-            if let Some(br) = defaults.base_reserve {
-                info.base_reserve = br;
-            }
-            env.ledger().set(info);
+        let mut info = env.ledger().get();
+        info.sequence_number = defaults.sequence_number.unwrap_or(0);
+        info.timestamp = defaults.timestamp.unwrap_or(0);
+        if let Some(pv) = defaults.protocol_version {
+            info.protocol_version = pv;
         }
+        if let Some(br) = defaults.base_reserve {
+            info.base_reserve = br;
+        }
+        env.ledger().set(info);
         env
     }
 
@@ -1335,6 +1327,14 @@ impl<'a> std::iter::FusedIterator for AddressIter<'a> {}
 mod tests {
     use super::*;
     use soroban_sdk::testutils::Ledger;
+
+    #[test]
+    fn new_uses_the_documented_starting_ledger() {
+        let env = TestEnv::new();
+        let ledger = env.env().ledger().get();
+        assert_eq!(ledger.sequence_number, 0);
+        assert_eq!(ledger.timestamp, 0);
+    }
 
     #[test]
     fn new_twice_produces_independent_environments() {
