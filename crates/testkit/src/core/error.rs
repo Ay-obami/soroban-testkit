@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::fmt;
 
 /// Errors raised by testkit assertion helpers and setup routines.
 ///
@@ -18,7 +19,7 @@ use std::error::Error;
 ///     "misuse of testkit API: events were never captured"
 /// );
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TestkitError {
     /// An assertion helper's expectation about contract state or behavior
     /// was not met (for example, an expected event was never emitted, or a
@@ -287,6 +288,16 @@ fn source_chain<'a>(err: &'a (dyn Error + 'static)) -> Vec<&'a (dyn Error + 'sta
         source = next.source();
     }
     chain
+}
+
+/// `Debug` forwards to `Display` so that `{:?}` and `{}` both produce the
+/// same stable, human-readable message. The derived `Debug` would emit the
+/// Rust enum-variant form (`AssertionFailed("assertion failed: …")`), which
+/// diverges from `Display` and makes snapshot-style assertions fragile.
+impl fmt::Debug for TestkitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
 }
 
 #[cfg(test)]
@@ -590,5 +601,25 @@ mod tests {
 
         let err3 = TestkitError::assertion_failed("test misuse");
         assert_ne!(err1, err3);
+    }
+
+    // Regression test for issue #28: `{:?}` must produce the same stable
+    // output as `{}` so that snapshot assertions and `#[should_panic]` tests
+    // see identical text regardless of which formatter they use.
+    #[test]
+    fn debug_output_matches_display_for_all_variants() {
+        let variants: &[TestkitError] = &[
+            TestkitError::AssertionFailed("deposited != withdrawn".into()),
+            TestkitError::DecodeFailed("expected i128, got Symbol".into()),
+            TestkitError::Misuse("events were never captured".into()),
+        ];
+        for err in variants {
+            assert_eq!(
+                format!("{err:?}"),
+                err.to_string(),
+                "Debug and Display must agree for {}",
+                err.code()
+            );
+        }
     }
 }
