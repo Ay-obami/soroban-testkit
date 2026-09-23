@@ -1327,6 +1327,40 @@ impl<'a> std::iter::FusedIterator for AddressIter<'a> {}
 mod tests {
     use super::*;
     use soroban_sdk::testutils::Ledger;
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+
+    fn benchmark_batch(mut make: impl FnMut(usize)) -> Duration {
+        const SAMPLES: usize = 64;
+        for i in 0..4 {
+            make(i);
+        }
+        let started = Instant::now();
+        for i in 0..SAMPLES {
+            make(i);
+        }
+        started.elapsed()
+    }
+
+    #[test]
+    fn construction_cost_stays_close_to_the_raw_sdk_env() {
+        let raw = benchmark_batch(|_| {
+            black_box(TestEnv::fresh_env());
+        });
+        let wrapped = benchmark_batch(|i| {
+            black_box(TestEnv::with_seed(i as u64));
+        });
+
+        // TestEnv construction should remain little more than constructing the
+        // SDK Env and storing its small amount of configuration. The fixed
+        // 50ms allowance keeps this guard stable on noisy CI runners while
+        // still catching accidental I/O, sleeps, or other heavyweight setup.
+        let budget = raw.saturating_mul(3) + Duration::from_millis(50);
+        assert!(
+            wrapped <= budget,
+            "constructing TestEnv regressed: wrapped={wrapped:?}, raw={raw:?}, budget={budget:?}"
+        );
+    }
 
     #[test]
     fn new_uses_the_documented_starting_ledger() {
