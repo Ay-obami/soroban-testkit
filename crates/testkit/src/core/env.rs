@@ -28,6 +28,10 @@ pub struct TestEnv {
     // Consumed by the `money` module's seeded generators (Module 3).
     #[allow(dead_code)]
     seed: u64,
+    // Per-environment override of the ledger close interval, in seconds.
+    // `None` means "use the crate default"; the `ledger` module owns both
+    // the default and the validation of overrides.
+    close_interval_secs: Option<u64>,
 }
 
 impl TestEnv {
@@ -69,7 +73,11 @@ impl TestEnv {
         let env = Env::new_with_config(soroban_sdk::testutils::EnvTestConfig {
             capture_snapshot_at_drop: false,
         });
-        Self { env, seed }
+        Self {
+            env,
+            seed,
+            close_interval_secs: None,
+        }
     }
 
     /// Escape hatch to the underlying SDK environment, for calls this crate
@@ -123,6 +131,17 @@ impl TestEnv {
     #[allow(dead_code)]
     pub(crate) fn seed(&self) -> u64 {
         self.seed
+    }
+
+    /// The ledger close interval configured for this environment, if any.
+    pub(crate) fn close_interval_override(&self) -> Option<u64> {
+        self.close_interval_secs
+    }
+
+    /// Record a ledger close interval for this environment. Callers are
+    /// responsible for validating `secs`.
+    pub(crate) fn set_close_interval_override(&mut self, secs: u64) {
+        self.close_interval_secs = Some(secs);
     }
 }
 
