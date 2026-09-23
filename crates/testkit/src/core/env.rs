@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{Address, Env};
 
 /// A wrapper around [`soroban_sdk::Env`] that carries testkit state
@@ -36,6 +36,11 @@ pub struct TestEnv {
 
 impl TestEnv {
     /// Create a fresh environment with a deterministic starting ledger.
+    ///
+    /// Every `TestEnv` starts at ledger sequence `0` and Unix timestamp `0`.
+    /// These values are set explicitly rather than inherited from the SDK's
+    /// defaults so tests can rely on them across SDK upgrades. Other ledger
+    /// parameters continue to come from the current Soroban SDK test config.
     ///
     /// Uses a non-reproducible seed for any future randomized value
     /// generation; use [`TestEnv::with_seed`] when a test needs to be
@@ -177,9 +182,12 @@ impl TestEnv {
     /// construction, [`TestEnv::clone_config`] and [`TestEnv::reset`] so the
     /// three cannot drift apart.
     fn fresh_env() -> Env {
-        Env::new_with_config(soroban_sdk::testutils::EnvTestConfig {
+        let env = Env::new_with_config(soroban_sdk::testutils::EnvTestConfig {
             capture_snapshot_at_drop: false,
-        })
+        });
+        env.ledger().set_sequence_number(0);
+        env.ledger().set_timestamp(0);
+        env
     }
 
     /// Escape hatch to the underlying SDK environment, for calls this crate
@@ -268,6 +276,14 @@ fn random_seed() -> u64 {
 mod tests {
     use super::*;
     use soroban_sdk::testutils::Ledger;
+
+    #[test]
+    fn new_uses_the_documented_starting_ledger() {
+        let env = TestEnv::new();
+        let ledger = env.env().ledger().get();
+        assert_eq!(ledger.sequence_number, 0);
+        assert_eq!(ledger.timestamp, 0);
+    }
 
     #[test]
     fn new_twice_produces_independent_environments() {
