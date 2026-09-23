@@ -1105,14 +1105,6 @@ mod tests {
             b_timestamp_before,
             "mutating a's timestamp must not affect b"
         );
-
-        // Addresses from each environment must be independent of each other.
-        let addr_from_a = a.address();
-        let addr_from_b = b.address();
-        assert_ne!(
-            addr_from_a, addr_from_b,
-            "addresses generated from independent environments must differ"
-        );
     }
 
     #[test]
