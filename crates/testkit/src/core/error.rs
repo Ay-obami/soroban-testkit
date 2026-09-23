@@ -32,8 +32,8 @@ pub enum TestkitError {
     DecodeFailed(String),
 
     /// The testkit API was used in a way its contract does not allow (for
-    /// example, asserting on events before capture was enabled, or warping
-    /// the ledger clock backwards).
+    /// example, asserting on events before capture was enabled, warping
+    /// the ledger clock backwards, or providing an invalid address label).
     #[error("misuse of testkit API: {0}")]
     Misuse(String),
 }
