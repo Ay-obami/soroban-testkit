@@ -252,6 +252,56 @@ impl TestkitError {
         }
     }
 
+    /// Returns a deterministic, human-readable string representation of this error
+    /// formatted specifically for snapshot testing.
+    ///
+    /// # User-facing behavior
+    ///
+    /// The snapshot output combines the machine-readable error code ([`TestkitError::code`])
+    /// with the human-readable error message in the format `"[CODE] message"`.
+    ///
+    /// - **Deterministic**: Contains no non-deterministic memory addresses, thread IDs, or timestamps.
+    /// - **Stable across runs**: Output remains identical across test executions and platforms.
+    /// - **Readable**: Clearly demarks the error classification code and failure details for snapshot diffs.
+    ///
+    /// # Format
+    ///
+    /// | Variant | Snapshot Output |
+    /// |---|---|
+    /// | [`TestkitError::AssertionFailed`] | `"[TESTKIT_ASSERTION_FAILED] assertion failed: ..."` |
+    /// | [`TestkitError::DecodeFailed`] | `"[TESTKIT_DECODE_FAILED] failed to decode value: ..."` |
+    /// | [`TestkitError::Misuse`] | `"[TESTKIT_MISUSE] misuse of testkit API: ..."` |
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestkitError;
+    ///
+    /// let err = TestkitError::Misuse("events were never captured".into());
+    /// assert_eq!(
+    ///     err.to_snapshot(),
+    ///     "[TESTKIT_MISUSE] misuse of testkit API: events were never captured"
+    /// );
+    /// ```
+    pub fn to_snapshot(&self) -> String {
+        format!("[{}] {}", self.code(), self)
+    }
+
+    /// Alias for [`TestkitError::to_snapshot`].
+    pub fn render_snapshot(&self) -> String {
+        self.to_snapshot()
+    }
+
+    /// Alias for [`TestkitError::to_snapshot`].
+    pub fn snapshot(&self) -> String {
+        self.to_snapshot()
+    }
+
+    /// Alias for [`TestkitError::to_snapshot`].
+    pub fn snapshot_display(&self) -> String {
+        self.to_snapshot()
+    }
+
     /// The underlying causes of this error, nearest first.
     ///
     /// Walks [`Error::source`] outwards from this error and stops at the
