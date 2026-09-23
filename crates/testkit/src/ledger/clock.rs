@@ -384,6 +384,18 @@ mod tests {
         assert_eq!(env.now(), before + 60);
     }
 
+    // A zero-duration advance must be an accepted no-op, not treated as an
+    // edge case that trips the overflow/rounding arithmetic in
+    // `advance_secs` (e.g. `0.div_ceil(interval)` must stay `0`).
+    #[test]
+    fn advance_by_zero_duration_moves_nothing() {
+        let env = TestEnv::new();
+        let (now, sequence) = (env.now(), env.sequence());
+        env.advance(Duration::from_secs(0));
+        assert_eq!(env.now(), now);
+        assert_eq!(env.sequence(), sequence);
+    }
+
     #[test]
     fn advance_moves_sequence_consistently_with_close_time() {
         let env = TestEnv::new();
@@ -415,6 +427,20 @@ mod tests {
         assert_eq!(env.now(), 500);
     }
 
+    // `warp_to` the exact current timestamp is not "into the past", so it
+    // must be accepted as a no-op rather than panicking.
+    #[test]
+    fn warp_to_the_current_timestamp_is_a_no_op() {
+        let env = TestEnv::new();
+        env.advance(Duration::from_secs(123));
+        let (now, sequence) = (env.now(), env.sequence());
+
+        env.warp_to(now);
+
+        assert_eq!(env.now(), now);
+        assert_eq!(env.sequence(), sequence);
+    }
+
     #[test]
     fn at_restores_clock_after_returning() {
         let env = TestEnv::new();
@@ -433,6 +459,62 @@ mod tests {
         }));
         assert!(result.is_err());
         assert_eq!(env.now(), before);
+    }
+
+    // Regression: a panic inside a *nested* `at` must unwind through both
+    // levels and leave each one's saved clock restored — the inner `at`
+    // restoring its own snapshot before resuming the unwind, and the outer
+    // `at` then restoring its snapshot as the panic passes through it.
+    #[test]
+    fn at_restores_clock_at_every_level_when_a_nested_closure_panics() {
+        let env = TestEnv::new();
+        let outer_before = env.now();
+
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            env.at(outer_before + 100, || {
+                let inner_before = env.now();
+                assert_eq!(inner_before, outer_before + 100);
+                env.at(outer_before + 200, || {
+                    panic!("boom from the innermost closure");
+                });
+            });
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(
+            env.now(),
+            outer_before,
+            "outer `at` must restore its snapshot even though the panic \
+             originated two levels deeper"
+        );
+    }
+
+    // Regression: `at` used to restore only the timestamp, so fields such as
+    // `protocol_version` or `base_reserve` that a closure changed (directly,
+    // or via a nested `at`/`advance`) leaked out of the call instead of
+    // being rolled back with the timestamp.
+    #[test]
+    fn at_restores_non_clock_ledger_fields() {
+        let env = TestEnv::new();
+        let before = env.env().ledger().get();
+        let mutated_reserve = before.base_reserve + 1;
+
+        env.at(env.now() + 10, || {
+            env.env().ledger().set(soroban_sdk::testutils::LedgerInfo {
+                base_reserve: mutated_reserve,
+                ..env.env().ledger().get()
+            });
+            assert_eq!(env.env().ledger().get().base_reserve, mutated_reserve);
+        });
+
+        let after = env.env().ledger().get();
+        assert_eq!(
+            after.base_reserve, before.base_reserve,
+            "base_reserve leaked out of `at` instead of being restored"
+        );
+        assert_eq!(after.timestamp, before.timestamp);
+        assert_eq!(after.protocol_version, before.protocol_version);
+        assert_eq!(after.network_id, before.network_id);
     }
 
     // --- advance overflow rejection -------------------------------------
