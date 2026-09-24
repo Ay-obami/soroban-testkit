@@ -111,7 +111,8 @@ doesn't produce); instructions and memory, measured locally, are.
 ## Status
 
 This crate is under active development. See `BUILD_SPEC.md` for the build
-plan and module boundaries.
+plan and module boundaries, and [`ARCHITECTURE.md`](ARCHITECTURE.md) for a
+contributor-facing map of the workspace and how its modules fit together.
 
 ## Prior art
 

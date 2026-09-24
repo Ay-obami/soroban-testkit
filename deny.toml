@@ -1,0 +1,44 @@
+# Supply-chain policy enforced by `cargo deny check` (see .github/workflows/ci.yml's
+# `deny` job). Run `cargo deny check` locally before relying on a new dependency.
+
+[graph]
+all-features = true
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Allowed licenses for this project and its dependency graph. Add to this
+# list deliberately, not to silence a failing check — a license outside
+# this set needs a documented reason (add it to `exceptions` below instead
+# of widening `allow`).
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+]
+confidence-threshold = 0.8
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
