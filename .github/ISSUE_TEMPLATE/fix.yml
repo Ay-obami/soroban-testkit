@@ -1,0 +1,31 @@
+name: Fix report
+description: Report a bug, limitation, or missing edge-case coverage
+labels: ["fix"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: input
+    id: module
+    attributes:
+      label: Affected module or file path
+      placeholder: crates/cli/src/commands/coverage.rs
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      render: rust
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: soroban-testkit / soroban-sdk versions
+    validations:
+      required: true

@@ -46,6 +46,10 @@ pub struct LimitsArgs {
     /// compare against the old baseline and then update it in one run.
     #[arg(long, value_name = "PATH")]
     save_baseline: Option<std::path::PathBuf>,
+    /// Export this run's result to PATH as a JSON file for CI artifacts.
+    /// Contains the discovered ceiling, instructions, and memory usage.
+    #[arg(long, value_name = "PATH")]
+    export: Option<std::path::PathBuf>,
 }
 
 /// Hidden: runs exactly one probe (a single ramp value) and reports its
@@ -227,8 +231,26 @@ pub fn run(args: LimitsArgs) -> Result<(), CliError> {
         )?;
     }
     if let Some(save_path) = &args.save_baseline {
-        write_baseline(save_path, &args.ramp, &args.function, best, instructions, memory_bytes)?;
+        write_baseline(
+            save_path,
+            &args.ramp,
+            &args.function,
+            best,
+            instructions,
+            memory_bytes,
+        )?;
         println!("saved baseline to {}", save_path.display());
+    }
+    if let Some(export_path) = &args.export {
+        export_results(
+            export_path,
+            &args.ramp,
+            &args.function,
+            best,
+            instructions,
+            memory_bytes,
+        )?;
+        println!("exported results to {}", export_path.display());
     }
 
     Ok(())
@@ -283,6 +305,7 @@ fn wait_with_timeout(
 /// Deliberately not JSON (no `serde` dependency anywhere in this
 /// workspace) — a flat `key=value` file is sufficient for one flat record
 /// and keeps this feature within its own module boundary.
+#[derive(Debug)]
 struct Baseline {
     function: String,
     ramp: String,
@@ -416,8 +439,14 @@ fn compare_to_baseline(
 
     println!("baseline comparison ({}):", path.display());
     println!("  {ramp}: {} -> {best}", baseline.best);
-    println!("  instructions: {} -> {instructions}", baseline.instructions);
-    println!("  memory bytes: {} -> {memory_bytes}", baseline.memory_bytes);
+    println!(
+        "  instructions: {} -> {instructions}",
+        baseline.instructions
+    );
+    println!(
+        "  memory bytes: {} -> {memory_bytes}",
+        baseline.memory_bytes
+    );
 
     let mut regressions = Vec::new();
     if best < baseline.best {
@@ -472,6 +501,29 @@ fn compare_to_baseline(
         "baseline regression detected: {}",
         regressions.join("; ")
     )))
+}
+
+fn export_results(
+    path: &std::path::Path,
+    ramp: &str,
+    function: &str,
+    best: u32,
+    instructions: u64,
+    memory_bytes: u64,
+) -> Result<(), CliError> {
+    let baseline = Baseline {
+        function: function.to_string(),
+        ramp: ramp.to_string(),
+        best,
+        instructions,
+        memory_bytes,
+    };
+    std::fs::write(path, baseline.to_file_contents()).map_err(|err| {
+        CliError(format!(
+            "failed to export results to {}: {err}",
+            path.display()
+        ))
+    })
 }
 
 fn measure(args: &LimitsArgs, value: u32) -> Result<(u64, u64), CliError> {
@@ -819,7 +871,15 @@ mod tests {
         let path = dir.join("pass.baseline");
         std::fs::write(&path, sample_baseline().to_file_contents()).unwrap();
 
-        let result = compare_to_baseline(&path, "recipients", "batch_payout", 100, 1_000_000, 50_000, 5.0);
+        let result = compare_to_baseline(
+            &path,
+            "recipients",
+            "batch_payout",
+            100,
+            1_000_000,
+            50_000,
+            5.0,
+        );
         assert!(result.is_ok(), "{:?}", result.err());
     }
 
@@ -830,9 +890,21 @@ mod tests {
         let path = dir.join("ceiling-drop.baseline");
         std::fs::write(&path, sample_baseline().to_file_contents()).unwrap();
 
-        let err = compare_to_baseline(&path, "recipients", "batch_payout", 90, 1_000_000, 50_000, 5.0)
-            .unwrap_err();
-        assert!(err.0.contains("ceiling dropped from 100 to 90"), "{}", err.0);
+        let err = compare_to_baseline(
+            &path,
+            "recipients",
+            "batch_payout",
+            90,
+            1_000_000,
+            50_000,
+            5.0,
+        )
+        .unwrap_err();
+        assert!(
+            err.0.contains("ceiling dropped from 100 to 90"),
+            "{}",
+            err.0
+        );
     }
 
     #[test]
@@ -843,8 +915,16 @@ mod tests {
         std::fs::write(&path, sample_baseline().to_file_contents()).unwrap();
 
         // +10% instructions, tolerance is 5%.
-        let err = compare_to_baseline(&path, "recipients", "batch_payout", 100, 1_100_000, 50_000, 5.0)
-            .unwrap_err();
+        let err = compare_to_baseline(
+            &path,
+            "recipients",
+            "batch_payout",
+            100,
+            1_100_000,
+            50_000,
+            5.0,
+        )
+        .unwrap_err();
         assert!(err.0.contains("instructions grew"), "{}", err.0);
     }
 
@@ -856,7 +936,15 @@ mod tests {
         std::fs::write(&path, sample_baseline().to_file_contents()).unwrap();
 
         // +2% instructions, tolerance is 5%.
-        let result = compare_to_baseline(&path, "recipients", "batch_payout", 100, 1_020_000, 50_000, 5.0);
+        let result = compare_to_baseline(
+            &path,
+            "recipients",
+            "batch_payout",
+            100,
+            1_020_000,
+            50_000,
+            5.0,
+        );
         assert!(result.is_ok(), "{:?}", result.err());
     }
 
@@ -867,18 +955,24 @@ mod tests {
         let path = dir.join("mismatch.baseline");
         std::fs::write(&path, sample_baseline().to_file_contents()).unwrap();
 
-        let err =
-            compare_to_baseline(&path, "amount", "batch_payout", 100, 1_000_000, 50_000, 5.0)
-                .unwrap_err();
+        let err = compare_to_baseline(&path, "amount", "batch_payout", 100, 1_000_000, 50_000, 5.0)
+            .unwrap_err();
         assert!(err.0.contains("was recorded for"), "{}", err.0);
     }
 
     #[test]
     fn compare_to_baseline_reports_a_missing_file_actionably() {
         let missing = std::env::temp_dir().join("this-baseline-does-not-exist.baseline");
-        let err =
-            compare_to_baseline(&missing, "recipients", "batch_payout", 100, 1_000_000, 50_000, 5.0)
-                .unwrap_err();
+        let err = compare_to_baseline(
+            &missing,
+            "recipients",
+            "batch_payout",
+            100,
+            1_000_000,
+            50_000,
+            5.0,
+        )
+        .unwrap_err();
         assert!(err.0.contains("failed to read baseline"), "{}", err.0);
     }
 
@@ -903,5 +997,39 @@ mod tests {
             start.elapsed() < Duration::from_secs(2),
             "should have killed the child near the timeout, not waited for it to finish"
         );
+    }
+
+    // ---- #244: export results ----
+
+    #[test]
+    fn export_results_writes_a_file_with_the_correct_format() {
+        let dir = std::env::temp_dir().join(format!("stk-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("export.results");
+
+        export_results(&path, "recipients", "batch_payout", 100, 1_000_000, 50_000).unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("function=batch_payout"));
+        assert!(contents.contains("ramp=recipients"));
+        assert!(contents.contains("best=100"));
+        assert!(contents.contains("instructions=1000000"));
+        assert!(contents.contains("memory_bytes=50000"));
+    }
+
+    #[test]
+    fn export_results_can_be_parsed_as_a_baseline() {
+        let dir = std::env::temp_dir().join(format!("stk-export-{}-2", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("export.results");
+
+        export_results(&path, "recipients", "batch_payout", 100, 1_000_000, 50_000).unwrap();
+
+        let baseline = Baseline::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(baseline.function, "batch_payout");
+        assert_eq!(baseline.ramp, "recipients");
+        assert_eq!(baseline.best, 100);
+        assert_eq!(baseline.instructions, 1_000_000);
+        assert_eq!(baseline.memory_bytes, 50_000);
     }
 }
