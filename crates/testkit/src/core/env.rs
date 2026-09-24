@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use soroban_sdk::testutils::Address as _;
@@ -220,14 +222,32 @@ impl fmt::Display for EnvMetadata {
     }
 }
 
+#[derive(Default)]
+struct LabelStore {
+    address_to_label: Vec<(Address, String)>,
+    label_to_address: HashMap<String, Address>,
+}
+
 /// A wrapper around [`soroban_sdk::Env`] that carries testkit state
-/// (clock position, captured events, registered tokens) alongside the raw
-/// SDK environment.
+/// (clock position, captured events, registered tokens, address labels) alongside
+/// the raw SDK environment.
 ///
 /// Every other module in this crate extends `TestEnv` with additional
 /// methods (ledger control, event capture, token doubles, and so on) rather
 /// than introducing separate handle types, so a single `TestEnv` is enough
 /// to drive an entire test.
+///
+/// # Generated Address Labels
+///
+/// Generated addresses in `TestEnv` can optionally have human-readable labels:
+///
+/// - **When a label is provided** (via [`TestEnv::address_with_label`] or [`TestEnv::address_labeled`]):
+///   The generated address is associated with the given label string. The label can be inspected
+///   using [`TestEnv::label_of`], and the address can be looked up by label using [`TestEnv::address_for_label`].
+/// - **When no label is provided** (via [`TestEnv::address`]): Address generation behavior is
+///   unchanged; a fresh random address is generated without any associated label.
+/// - **Label exposure**: Labels are represented as string slices (`&str`) / owned strings (`String`)
+///   and exposed via [`TestEnv::label_of`] and [`TestEnv::address_for_label`].
 ///
 /// # Example
 ///
@@ -235,9 +255,11 @@ impl fmt::Display for EnvMetadata {
 /// use soroban_testkit::core::TestEnv;
 ///
 /// let env = TestEnv::new();
-/// let alice = env.address();
+/// let alice = env.address_with_label("alice");
 /// let bob = env.address();
 /// assert_ne!(alice, bob);
+/// assert_eq!(env.label_of(&alice), Some("alice".to_string()));
+/// assert_eq!(env.label_of(&bob), None);
 /// ```
 pub struct TestEnv {
     env: Env,
@@ -250,6 +272,7 @@ pub struct TestEnv {
     close_interval_secs: Option<u64>,
     // Deterministic starting ledger parameters provided via LedgerDefaults.
     ledger_defaults: LedgerDefaults,
+    labels: Mutex<LabelStore>,
 }
 
 impl TestEnv {
@@ -293,6 +316,7 @@ impl TestEnv {
             seed,
             close_interval_secs: None,
             ledger_defaults: LedgerDefaults::default(),
+            labels: Mutex::new(LabelStore::default()),
         }
     }
 
@@ -322,6 +346,7 @@ impl TestEnv {
             seed: random_seed(),
             close_interval_secs: None,
             ledger_defaults: defaults,
+            labels: Mutex::new(LabelStore::default()),
         }
     }
 
@@ -350,6 +375,7 @@ impl TestEnv {
             seed,
             close_interval_secs: None,
             ledger_defaults: defaults,
+            labels: Mutex::new(LabelStore::default()),
         }
     }
 
@@ -363,7 +389,7 @@ impl TestEnv {
     /// |---|---|
     /// | the RNG seed ([`TestEnv::with_seed`]) | the ledger clock position (`now`, `sequence`) |
     /// | the ledger close interval, if one was set ([`TestEnv::with_ledger_close_interval`]) | deployed contracts and their storage |
-    /// | | addresses, clients, and any other value created from this environment |
+    /// | | addresses, labels, clients, and any other value created from this environment |
     /// | | ledger settings changed directly through [`TestEnv::env`] |
     ///
     /// An environment that never set a close interval stays that way: the
@@ -404,6 +430,7 @@ impl TestEnv {
             seed: self.seed,
             close_interval_secs: self.close_interval_secs,
             ledger_defaults: self.ledger_defaults.clone(),
+            labels: Mutex::new(LabelStore::default()),
         }
     }
 
@@ -448,6 +475,10 @@ impl TestEnv {
     /// ```
     pub fn reset(&mut self) {
         self.env = Self::fresh_env_with_defaults(&self.ledger_defaults);
+        if let Ok(store) = self.labels.get_mut() {
+            store.address_to_label.clear();
+            store.label_to_address.clear();
+        }
     }
 
     /// Build the raw SDK environment every `TestEnv` starts from. Shared by
@@ -498,7 +529,11 @@ impl TestEnv {
         &self.env
     }
 
-    /// Generate a fresh random address.
+    /// Generate a fresh random address without a label.
+    ///
+    /// When no label is provided (as in this method), the address is generated without any
+    /// associated label. Use [`TestEnv::address_with_label`] if you want to generate an address
+    /// with an optional human-readable label.
     ///
     /// # Example
     ///
@@ -509,9 +544,139 @@ impl TestEnv {
     /// let alice = env.address();
     /// let bob = env.address();
     /// assert_ne!(alice, bob);
+    /// assert_eq!(env.label_of(&alice), None);
     /// ```
     pub fn address(&self) -> Address {
         Address::generate(&self.env)
+    }
+
+    /// Generate a fresh random address associated with an optional human-readable label.
+    ///
+    /// # User-facing behavior
+    ///
+    /// - **When a label is provided**: Generates a fresh address, registers the label
+    ///   association in this environment, and returns the address. The label can
+    ///   subsequently be retrieved via [`TestEnv::label_of`], and the address can be
+    ///   looked up via [`TestEnv::address_for_label`].
+    /// - **When no label is provided** (via [`TestEnv::address`]): Existing address
+    ///   generation behavior is preserved; the address is generated without any label.
+    /// - **Label exposure**: Labels are represented as `&str` / `String` values and exposed
+    ///   via [`TestEnv::label_of`] and [`TestEnv::address_for_label`].
+    ///
+    /// # Error behavior
+    ///
+    /// Panics with a [`TestkitError::Misuse`] if:
+    /// - `label` is empty or consists entirely of whitespace.
+    /// - `label` is already associated with an address in this environment.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let alice = env.address_with_label("alice");
+    /// assert_eq!(env.label_of(&alice), Some("alice".to_string()));
+    /// assert_eq!(env.address_for_label("alice"), Some(alice));
+    /// ```
+    pub fn address_with_label(&self, label: &str) -> Address {
+        let trimmed = label.trim();
+        if trimmed.is_empty() {
+            panic!(
+                "{}",
+                TestkitError::Misuse(
+                    "address label cannot be empty or whitespace-only".to_string()
+                )
+            );
+        }
+
+        let mut store = self
+            .labels
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if store.label_to_address.contains_key(label) {
+            panic!(
+                "{}",
+                TestkitError::Misuse(format!("address label '{label}' is already in use"))
+            );
+        }
+
+        let addr = Address::generate(&self.env);
+        store
+            .address_to_label
+            .push((addr.clone(), label.to_string()));
+        store
+            .label_to_address
+            .insert(label.to_string(), addr.clone());
+        addr
+    }
+
+    /// Alias for [`TestEnv::address_with_label`].
+    pub fn address_labeled(&self, label: &str) -> Address {
+        self.address_with_label(label)
+    }
+
+    /// Get the human-readable label associated with an address, if any.
+    ///
+    /// Returns `Some(label)` if the address was generated with a label (e.g., via
+    /// [`TestEnv::address_with_label`]), or `None` if the address has no label.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let alice = env.address_with_label("alice");
+    /// let bob = env.address();
+    ///
+    /// assert_eq!(env.label_of(&alice), Some("alice".to_string()));
+    /// assert_eq!(env.label_of(&bob), None);
+    /// ```
+    pub fn label_of(&self, address: &Address) -> Option<String> {
+        let store = self
+            .labels
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        store
+            .address_to_label
+            .iter()
+            .find(|(a, _)| a == address)
+            .map(|(_, l)| l.clone())
+    }
+
+    /// Alias for [`TestEnv::label_of`].
+    pub fn label(&self, address: &Address) -> Option<String> {
+        self.label_of(address)
+    }
+
+    /// Look up a generated address by its human-readable label, if any.
+    ///
+    /// Returns `Some(address)` if an address was generated with `label`, or `None`
+    /// if no address in this environment has that label.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let alice = env.address_with_label("alice");
+    /// assert_eq!(env.address_for_label("alice"), Some(alice));
+    /// assert_eq!(env.address_for_label("unknown"), None);
+    /// ```
+    pub fn address_for_label(&self, label: &str) -> Option<Address> {
+        let store = self
+            .labels
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        store.label_to_address.get(label).cloned()
+    }
+
+    /// Alias for [`TestEnv::address_for_label`].
+    pub fn address_by_label(&self, label: &str) -> Option<Address> {
+        self.address_for_label(label)
     }
 
     /// Generate `n` fresh addresses.
@@ -1105,6 +1270,7 @@ mod tests {
             b_timestamp_before,
             "mutating a's timestamp must not affect b"
         );
+ fix/issue-26-testenv-isolation
 
         // Addresses from each environment must be independent of each other.
         let addr_from_a = a.address();
@@ -1113,6 +1279,7 @@ mod tests {
             addr_from_a, addr_from_b,
             "addresses generated from independent environments must differ"
         );
+ main
     }
 
     #[test]
