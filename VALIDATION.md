@@ -155,3 +155,9 @@ else needed checking":
 - The `vesting` test rewrite exists only in the local sororail checkout,
   uncommitted there — this repository has no ability to modify or
   publish to sororail-contracts, and wasn't asked to.
+add validation coverage for the recurring contract
+add validation coverage for the batch payout auth model
+
+add a line-count and coverage comparison to validation
+
+add benchmark tracking for TestEnv construction
