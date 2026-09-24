@@ -41,8 +41,16 @@ jobs:
       # locked dependencies and then drops the network with
       # `unshare --net`: the suite must pass with no network access
       # (BUILD_SPEC.md §3, CONTRIBUTING.md scope).
-      - name: workspace tests (network disabled)
-        run: bash .github/scripts/test-no-network.sh full
+      #
+      # The suite is split into two explicit steps rather than one
+      # generic workspace test run: doc tests execute as their own
+      # step so README examples (include_str!'d into the crate docs)
+      # cannot be silently dropped — `--all-targets` skips doctests
+      # entirely.
+      - name: unit + integration tests (network disabled)
+        run: bash .github/scripts/test-no-network.sh all-targets
+      - name: doc tests — README examples (network disabled)
+        run: bash .github/scripts/test-no-network.sh doc
 
   doc:
     name: cargo doc
