@@ -1,5 +1,9 @@
 # Contributing
 
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for a map of the workspace — crate
+and module boundaries, how they depend on each other, and where a new
+capability should live — before your first PR.
+
 ## Scope
 
 Read `BUILD_SPEC.md` §3 (Scope boundaries) before opening an issue or PR.
@@ -15,8 +19,37 @@ framework, anything requiring network access at test time.
 - Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/),
   enforced in CI.
 - Every PR must pass: `cargo fmt --check`, `cargo clippy -- -D warnings`,
-  `cargo test --workspace`, `cargo doc` with no warnings, `cargo audit`.
+  `cargo test --workspace`, `cargo doc` with no warnings, `cargo audit`,
+  `cargo deny check` (see [Supply-chain policy](#supply-chain-policy)).
   Red CI blocks merge with no maintainer exception.
+- CI also runs a scheduled job weekly against whatever `soroban-sdk` version
+  is currently latest on crates.io (independent of the pinned version in
+  `Cargo.toml`), so a breaking upstream release is caught before it shows up
+  in a contributor's PR. It opens an issue automatically if it fails; it
+  never blocks a PR.
+
+## Supply-chain policy
+
+Dependencies are checked with [`cargo-deny`](https://embarkstudios.github.io/cargo-deny/),
+configured in `deny.toml`, and enforced in CI (`deny` job). It checks:
+
+- **Licenses** — every dependency's license must be in the `allow` list
+  (currently the OSI/FSF-approved licenses this project's Apache-2.0
+  license is compatible with). A new dependency under a license outside
+  that list needs a documented exception in `deny.toml`, not a widened
+  `allow` list.
+- **Advisories** — no known-yanked crate versions; RustSec advisories are
+  checked in the `audit` job (`cargo audit`) and mirrored here.
+- **Sources** — dependencies must come from crates.io; an unlisted registry
+  or git dependency fails the check unless explicitly allow-listed.
+- **Bans** — no wildcard (`*`) version requirements.
+
+Run it locally before adding a dependency:
+
+```sh
+cargo install cargo-deny --locked
+cargo deny check
+```
 
 ## Code conventions
 
