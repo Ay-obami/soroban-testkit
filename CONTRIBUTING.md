@@ -19,9 +19,31 @@ framework, anything requiring network access at test time.
 - Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/),
   enforced in CI.
 - Every PR must pass: `cargo fmt --check`, `cargo clippy -- -D warnings`,
-  `cargo test --workspace`, `cargo doc` with no warnings, `cargo audit`,
-  `cargo deny check` (see [Supply-chain policy](#supply-chain-policy)).
+  `cargo test --workspace --all-targets`, `cargo test --workspace --doc`,
+  `cargo doc` with no warnings, `cargo audit`, `cargo deny check` (see
+  [Supply-chain policy](#supply-chain-policy)).
   Red CI blocks merge with no maintainer exception.
+- **Doc tests gate the README.** `README.md` is compiled into the crate's
+  docs (`#![doc = include_str!]` in `crates/testkit/src/lib.rs`), and CI
+  runs the doc tests as their own step, so a README example cannot
+  silently drift from the public API — and a change to the other step's
+  flags (e.g. `--all-targets`, which skips doctests) cannot silently
+  drop them.
+- **Rustdoc warnings fail CI.** `RUSTDOCFLAGS: -D warnings` is set at the
+  workflow level in `ci.yml`, so `cargo doc`, the doc-test step, and any
+  rustdoc invocation added later all error on warnings rather than one
+  step being the only place they are denied.
+- **Tests run without network access.** Every CI test invocation goes
+  through `.github/scripts/test-no-network.sh`, which fetches locked
+  dependencies and then runs the suite inside an `unshare --net`
+  namespace — enforcing the no-network requirement from
+  [Scope](#scope). A test that quietly needs the network fails in CI
+  instead of passing on a connected machine.
+- **crates.io metadata stays aligned.** The `[workspace.package]
+  repository` URL in `Cargo.toml` is the repository link crates.io shows
+  for both published crates; the `docs` workflow fails any PR where it,
+  either crate's `repository.workspace` inheritance, or the changelog's
+  release links drift from the canonical repository URL.
 - CI also runs a scheduled job weekly against whatever `soroban-sdk` version
   is currently latest on crates.io (independent of the pinned version in
   `Cargo.toml`), so a breaking upstream release is caught before it shows up

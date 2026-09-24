@@ -10,7 +10,8 @@
 
 - [ ] `cargo fmt --check` passes
 - [ ] `cargo clippy -- -D warnings` passes
-- [ ] `cargo test --workspace` passes
+- [ ] `cargo test --workspace --all-targets` and
+      `cargo test --workspace --doc` pass
 - [ ] Public API changes have doc comments with a runnable `# Example`
 - [ ] New assertion helpers have both a passing and a
       `#[should_panic(expected = "...")]` test

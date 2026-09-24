@@ -114,6 +114,12 @@ This crate is under active development. See `BUILD_SPEC.md` for the build
 plan and module boundaries, and [`ARCHITECTURE.md`](ARCHITECTURE.md) for a
 contributor-facing map of the workspace and how its modules fit together.
 
+CI enforces the guarantees that keep this documentation honest: every Rust
+example above is compiled and run as a doctest against the public API,
+rustdoc warnings fail the build, the test suite runs with network access
+removed, and the crates.io `repository` metadata is checked against the
+canonical repository URL.
+
 ## Documentation
 
 - [`CHANGELOG.md`](CHANGELOG.md) — user-facing release notes for each
