@@ -1,0 +1,21 @@
+[package]
+name = "quickstart"
+description = "A complete quickstart contract fixture demonstrating soroban-testkit end to end."
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+soroban-sdk.workspace = true
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+soroban-testkit = { path = "../../crates/testkit" }
+
+[features]
+testutils = ["soroban-sdk/testutils"]

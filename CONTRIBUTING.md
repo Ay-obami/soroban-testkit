@@ -76,3 +76,28 @@ make check                # fmt + clippy + test, same as CI
 
 Labeled `good-first-issue`. Module 7 (`ttl`) is not beginner-friendly and
 is never labeled as such.
+
+## SDK upgrades and migration guides
+
+`soroban-sdk` moves quickly. When the pinned version in `Cargo.toml` is
+bumped, a migration note is required. See [`docs/sdk-migration.md`](docs/sdk-migration.md)
+for the format and all past entries.
+
+**What triggers a migration entry:**
+
+- The `soroban-sdk` version pin in `[workspace.dependencies]` changes.
+- A public API in this crate changes because of an upstream SDK change.
+- A previously-documented behavior (e.g. ledger close interval, TTL
+  parameters, SAC decimals) is updated to match a new SDK version.
+
+**What to include** (from the template in `docs/sdk-migration.md`):
+
+1. The old and new SDK version.
+2. What broke or changed — be specific about which modules and public
+   items are affected.
+3. What a downstream user needs to change in their own test code, if
+   anything.
+4. Whether CI's scheduled-sdk-check job caught the break first (record
+   this — it is evidence the safety net works).
+
+A PR that upgrades the SDK without a migration entry will not be merged.
