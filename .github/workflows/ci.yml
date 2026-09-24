@@ -11,6 +11,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Deny rustdoc warnings in every job: `cargo doc`, the workspace
+  # doc-test step, and any rustdoc invocation added later. Scoped to
+  # the workflow rather than one step so a new doc invocation cannot
+  # start passing CI while rustdoc is warning.
+  RUSTDOCFLAGS: -D warnings
 
 jobs:
   lint:
@@ -59,9 +64,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Warnings are denied via the workflow-level RUSTDOCFLAGS above.
       - run: cargo doc --workspace --no-deps
-        env:
-          RUSTDOCFLAGS: -D warnings
 
   audit:
     name: cargo audit
