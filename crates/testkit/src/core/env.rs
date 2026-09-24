@@ -6,6 +6,8 @@ use soroban_sdk::testutils::Address as _;
 use soroban_sdk::testutils::Ledger as _;
 use soroban_sdk::{Address, Env};
 
+use super::error::TestkitError;
+
 // ──────────────────────────────────────────────────────────────────────────
 // Issue #35 — builder for deterministic ledger defaults
 // ──────────────────────────────────────────────────────────────────────────
@@ -743,10 +745,24 @@ impl TestEnv {
             .collect())
     }
 
-    /// The seed this environment was constructed with, for use by other
-    /// modules' random value generators.
-    #[allow(dead_code)]
-    pub(crate) fn seed(&self) -> u64 {
+    /// The seed this environment was constructed with.
+    ///
+    /// This is the same seed passed to [`TestEnv::with_seed`], and can be used
+    /// to reconstruct an environment with identical deterministic behavior
+    /// (address generation, seeded property-test generators).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::with_seed(42);
+    /// let seed = env.seed();
+    /// let recreated = TestEnv::with_seed(seed);
+    /// assert_eq!(env.seed(), recreated.seed());
+    /// assert_eq!(env.address(), recreated.address());
+    /// ```
+    pub fn seed(&self) -> u64 {
         self.seed
     }
 
@@ -1068,6 +1084,67 @@ mod tests {
         let b = TestEnv::with_seed(42);
         assert_eq!(a.seed(), b.seed());
         assert_eq!(a.address(), b.address());
+    }
+
+    // --- seed accessor (#34) ---------------------------------------------
+
+    #[test]
+    fn seed_returns_the_seed_passed_to_with_seed() {
+        for seed in [0, 1, 42, u64::MAX] {
+            assert_eq!(TestEnv::with_seed(seed).seed(), seed);
+        }
+    }
+
+    #[test]
+    fn seed_is_carried_by_the_combined_defaults_constructor() {
+        let defaults = LedgerDefaults::new().sequence_number(500);
+        let env = TestEnv::with_ledger_defaults_and_seed(defaults, 7);
+        assert_eq!(env.seed(), 7);
+    }
+
+    // The exposed seed is the round-trip key: rebuilding an environment from
+    // the value `seed()` reports must reproduce the seeded generators.
+    #[test]
+    fn the_exposed_seed_rebuilds_an_identical_generator_stream() {
+        let env = TestEnv::with_seed(1234);
+        let recreated = TestEnv::with_seed(env.seed());
+
+        assert_eq!(
+            crate::money::amounts_in(&env, 0, 1_000_000, 16),
+            crate::money::amounts_in(&recreated, 0, 1_000_000, 16)
+        );
+    }
+
+    // Distinct seeds must drive distinct streams — otherwise `seed()` would
+    // report a value that does not actually control the generators.
+    #[test]
+    fn different_seeds_drive_different_generator_streams() {
+        let a = crate::money::amounts_in(&TestEnv::with_seed(1), 0, 1_000_000, 16);
+        let b = crate::money::amounts_in(&TestEnv::with_seed(2), 0, 1_000_000, 16);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn seed_zero_is_a_real_seed_not_an_unset_marker() {
+        let env = TestEnv::with_seed(0);
+        assert_eq!(env.seed(), 0);
+        assert_eq!(
+            crate::money::amounts_in(&env, 0, 100, 8),
+            crate::money::amounts_in(&TestEnv::with_seed(0), 0, 100, 8)
+        );
+    }
+
+    // The seed is construction-time configuration: drawing addresses and
+    // moving the clock must not change it.
+    #[test]
+    fn the_seed_does_not_change_while_the_environment_is_used() {
+        let env = TestEnv::with_seed(42);
+        let before = env.seed();
+
+        env.addresses(4);
+        env.advance_ledgers(10);
+
+        assert_eq!(env.seed(), before);
     }
 
     #[test]

@@ -4,4 +4,4 @@
 
 mod clock;
 
-pub use clock::LEDGER_CLOSE_TIME_SECS;
+pub use clock::{LedgerCheckpoint, LEDGER_CLOSE_TIME_SECS};

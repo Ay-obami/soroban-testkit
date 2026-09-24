@@ -1,3 +1,5 @@
+use std::error::Error;
+
 /// Errors raised by testkit assertion helpers and setup routines.
 ///
 /// Assertion helpers throughout this crate panic deliberately when a
@@ -230,6 +232,61 @@ impl TestkitError {
             TestkitError::Misuse(_) => "TESTKIT_MISUSE",
         }
     }
+
+    /// The variant name of this error, as a static string.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestkitError;
+    ///
+    /// let err = TestkitError::Misuse("boom".into());
+    /// assert_eq!(err.kind(), "Misuse");
+    /// ```
+    pub fn kind(&self) -> &'static str {
+        match self {
+            TestkitError::AssertionFailed { .. } => "AssertionFailed",
+            TestkitError::DecodeFailed { .. } => "DecodeFailed",
+            TestkitError::Misuse { .. } => "Misuse",
+        }
+    }
+
+    /// The underlying causes of this error, nearest first.
+    ///
+    /// Walks [`Error::source`] outwards from this error and stops at the
+    /// first link with no source, so the result is empty for an error that
+    /// wraps nothing. The error itself is never included.
+    ///
+    /// None of [`TestkitError`]'s variants wrap another error today, so this
+    /// returns an empty vector for every error that can currently be
+    /// constructed. The helper exists so callers can inspect the chain
+    /// without caring whether a variant grows a source later.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestkitError;
+    ///
+    /// let err = TestkitError::DecodeFailed("could not read".into());
+    /// assert!(err.chain().is_empty()); // no variant wraps a source today
+    /// ```
+    pub fn chain(&self) -> Vec<&(dyn Error + 'static)> {
+        source_chain(self)
+    }
+}
+
+/// Walk the [`Error::source`] chain of `err`, nearest cause first.
+///
+/// The error itself is not included, and the walk stops at the first link
+/// with no source, so the result is empty for an error that wraps nothing.
+fn source_chain<'a>(err: &'a (dyn Error + 'static)) -> Vec<&'a (dyn Error + 'static)> {
+    let mut chain = Vec::new();
+    let mut source = err.source();
+    while let Some(next) = source {
+        chain.push(next);
+        source = next.source();
+    }
+    chain
 }
 
 #[cfg(test)]
@@ -318,6 +375,108 @@ mod tests {
     fn code_is_not_added_to_the_display_message() {
         let err = TestkitError::Misuse("boom".into());
         assert!(!err.to_string().contains(err.code()));
+    }
+
+    #[test]
+    fn kind_returns_variant_name() {
+        assert_eq!(
+            TestkitError::AssertionFailed("x".into()).kind(),
+            "AssertionFailed"
+        );
+        assert_eq!(
+            TestkitError::DecodeFailed("x".into()).kind(),
+            "DecodeFailed"
+        );
+        assert_eq!(TestkitError::Misuse("x".into()).kind(), "Misuse");
+    }
+
+    // --- source-chain inspection (#46) ----------------------------------
+
+    // A `TestkitError` never wraps another error today, so the chain must be
+    // empty — and must not smuggle the error itself in as its own cause.
+    #[test]
+    fn chain_is_empty_for_every_variant() {
+        let errors = [
+            TestkitError::AssertionFailed("x".into()),
+            TestkitError::DecodeFailed("x".into()),
+            TestkitError::Misuse("x".into()),
+        ];
+        for err in &errors {
+            assert!(
+                err.chain().is_empty(),
+                "{} carried a hidden source",
+                err.kind()
+            );
+        }
+    }
+
+    #[test]
+    fn chain_does_not_include_the_error_itself() {
+        let err = TestkitError::misuse("boom");
+        assert!(err
+            .chain()
+            .iter()
+            .all(|source| source.to_string() != err.to_string()));
+    }
+
+    // `TestkitError`'s variants are leaves, so the traversal itself is
+    // exercised against a real multi-level chain built from local errors.
+    #[test]
+    fn source_chain_walks_every_link_nearest_first() {
+        let chain = source_chain(&Outer(Middle(Leaf)));
+        let rendered: Vec<String> = chain.iter().map(|err| err.to_string()).collect();
+        assert_eq!(rendered, ["middle", "leaf"]);
+    }
+
+    #[test]
+    fn source_chain_stops_at_the_first_link_without_a_source() {
+        assert!(source_chain(&Leaf).is_empty());
+        assert_eq!(source_chain(&Middle(Leaf)).len(), 1);
+        assert_eq!(source_chain(&Outer(Middle(Leaf))).len(), 2);
+    }
+
+    /// A leaf error: it has no cause of its own.
+    #[derive(Debug)]
+    struct Leaf;
+
+    impl std::fmt::Display for Leaf {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("leaf")
+        }
+    }
+
+    impl Error for Leaf {}
+
+    /// One level of wrapping.
+    #[derive(Debug)]
+    struct Middle(Leaf);
+
+    impl std::fmt::Display for Middle {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("middle")
+        }
+    }
+
+    impl Error for Middle {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    /// Two levels of wrapping, to prove the walk keeps going.
+    #[derive(Debug)]
+    struct Outer(Middle);
+
+    impl std::fmt::Display for Outer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("outer")
+        }
+    }
+
+    impl Error for Outer {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            Some(&self.0)
+        }
     }
 
     // --- Pass and failure tests for every TestkitError variant (#29) -----
