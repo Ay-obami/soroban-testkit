@@ -138,3 +138,4 @@ mainnet/testnet forking for tests. That is a different problem;
 ## License
 
 Apache-2.0
+add validation coverage for the recurring contract

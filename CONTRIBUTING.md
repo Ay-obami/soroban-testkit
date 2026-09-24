@@ -91,3 +91,4 @@ make check                # fmt + clippy + test, same as CI
 
 Labeled `good-first-issue`. Module 7 (`ttl`) is not beginner-friendly and
 is never labeled as such.
+add validation coverage for the recurring contract
