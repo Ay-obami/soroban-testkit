@@ -4,6 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Env};
 
+use crate::core::TestkitError;
+
 /// A wrapper around [`soroban_sdk::Env`] that carries testkit state
 /// (clock position, captured events, registered tokens) alongside the raw
 /// SDK environment.
@@ -228,6 +230,222 @@ impl TestEnv {
         (0..n).map(|_| self.address()).collect()
     }
 
+    /// Return an infinite iterator yielding fresh, distinct [`Address`] values.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let addrs: Vec<_> = env.address_iter().take(4).collect();
+    /// assert_eq!(addrs.len(), 4);
+    /// ```
+    pub fn address_iter(&self) -> AddressIter<'_> {
+        AddressIter::new(self)
+    }
+
+    /// Plural alias for [`TestEnv::address_iter`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let addrs: Vec<_> = env.addresses_iter().take(2).collect();
+    /// assert_eq!(addrs.len(), 2);
+    /// ```
+    pub fn addresses_iter(&self) -> AddressIter<'_> {
+        self.address_iter()
+    }
+
+    /// Generate a batch of `n` fresh addresses, returning `Err(TestkitError::Misuse)`
+    /// if `n == 0` or if `n` exceeds [`MAX_ADDRESS_BATCH_SIZE`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`TestkitError::Misuse`] if:
+    /// - `n == 0`: requesting zero addresses indicates a test setup error.
+    /// - `n > MAX_ADDRESS_BATCH_SIZE`: batch size exceeds the allowed threshold.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let addrs = env.try_addresses(3).expect("valid batch size");
+    /// assert_eq!(addrs.len(), 3);
+    ///
+    /// let err = env.try_addresses(0).unwrap_err();
+    /// assert_eq!(err.code(), "TESTKIT_MISUSE");
+    /// ```
+    pub fn try_addresses(&self, n: usize) -> Result<Vec<Address>, TestkitError> {
+        if n == 0 {
+            return Err(TestkitError::Misuse(
+                "address batch size must be at least 1; requested 0 addresses".into(),
+            ));
+        }
+        if n > MAX_ADDRESS_BATCH_SIZE {
+            return Err(TestkitError::Misuse(format!(
+                "requested address batch size {n} exceeds the maximum limit of {MAX_ADDRESS_BATCH_SIZE}"
+            )));
+        }
+        Ok(self.addresses(n))
+    }
+
+    /// Checked variant of address batch generation, equivalent to [`TestEnv::try_addresses`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TestkitError::Misuse`] if `n == 0` or `n > MAX_ADDRESS_BATCH_SIZE`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// assert!(env.checked_addresses(2).is_ok());
+    /// assert!(env.checked_addresses(0).is_err());
+    /// ```
+    pub fn checked_addresses(&self, n: usize) -> Result<Vec<Address>, TestkitError> {
+        self.try_addresses(n)
+    }
+
+    /// Generate a named [`Actor`] pairing the given identifier with a fresh [`Address`].
+    ///
+    /// # Panics
+    ///
+    /// Panics with a [`TestkitError::Misuse`] if `name` is empty or consists solely of whitespace.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let alice = env.actor("alice");
+    /// assert_eq!(alice.name(), "alice");
+    /// ```
+    pub fn actor(&self, name: &str) -> Actor {
+        self.try_actor(name).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Checked variant of [`TestEnv::actor`], returning [`TestkitError::Misuse`]
+    /// if `name` is empty or only whitespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TestkitError::Misuse`] if `name` is empty or whitespace-only.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// assert!(env.try_actor("alice").is_ok());
+    /// assert!(env.try_actor("").is_err());
+    /// ```
+    pub fn try_actor(&self, name: &str) -> Result<Actor, TestkitError> {
+        if name.trim().is_empty() {
+            return Err(TestkitError::Misuse(
+                "actor name cannot be empty or only whitespace".into(),
+            ));
+        }
+        Ok(Actor::new(name, self.address()))
+    }
+
+    /// Alias for [`TestEnv::actor`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let bob = env.named_actor("bob");
+    /// assert_eq!(bob.name(), "bob");
+    /// ```
+    pub fn named_actor(&self, name: &str) -> Actor {
+        self.actor(name)
+    }
+
+    /// Alias for [`TestEnv::try_actor`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// assert!(env.try_named_actor("bob").is_ok());
+    /// assert!(env.try_named_actor("   ").is_err());
+    /// ```
+    pub fn try_named_actor(&self, name: &str) -> Result<Actor, TestkitError> {
+        self.try_actor(name)
+    }
+
+    /// Generate multiple named [`Actor`]s from a slice of names.
+    ///
+    /// # Panics
+    ///
+    /// Panics with a [`TestkitError::Misuse`] if any name is empty/whitespace,
+    /// or if duplicate names are specified.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let actors = env.actors(&["alice", "bob", "charlie"]);
+    /// assert_eq!(actors.len(), 3);
+    /// assert_ne!(actors[0].address(), actors[1].address());
+    /// ```
+    pub fn actors(&self, names: &[&str]) -> Vec<Actor> {
+        self.try_actors(names).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Checked variant of [`TestEnv::actors`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TestkitError::Misuse`] if any name is blank or if duplicate
+    /// actor names are detected in `names`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// assert!(env.try_actors(&["alice", "bob"]).is_ok());
+    /// assert!(env.try_actors(&["alice", "alice"]).is_err());
+    /// ```
+    pub fn try_actors(&self, names: &[&str]) -> Result<Vec<Actor>, TestkitError> {
+        for (i, &name) in names.iter().enumerate() {
+            if name.trim().is_empty() {
+                return Err(TestkitError::Misuse(
+                    "actor name cannot be empty or only whitespace".into(),
+                ));
+            }
+            for &earlier in &names[..i] {
+                if earlier == name {
+                    return Err(TestkitError::Misuse(format!(
+                        "duplicate actor name {name:?} in batch request"
+                    )));
+                }
+            }
+        }
+        Ok(names
+            .iter()
+            .map(|&n| Actor::new(n, self.address()))
+            .collect())
+    }
+
     /// The seed this environment was constructed with, for use by other
     /// modules' random value generators.
     #[allow(dead_code)]
@@ -263,6 +481,210 @@ fn random_seed() -> u64 {
     let count = SEED_COUNTER.fetch_add(1, Ordering::Relaxed);
     nanos ^ count.wrapping_mul(0x9E37_79B9_7F4A_7C15)
 }
+
+/// Maximum number of addresses that can be requested in a single batch.
+pub const MAX_ADDRESS_BATCH_SIZE: usize = 10_000;
+
+/// A named test actor pairing a human-readable identifier (such as `"alice"` or
+/// `"treasury"`) with a generated Soroban [`Address`].
+///
+/// In contract tests, raw cryptographic addresses (for example,
+/// `Address(Account(GA...))`) in assertion failures or diagnostic logs make it
+/// tedious to track which participant caused a failure. `Actor` bundles the
+/// display name alongside the address so test diagnostics, auth matrices, and
+/// logs clearly show the actor responsible.
+///
+/// `Actor` implements [`std::ops::Deref`] targeting [`Address`], so an `&Actor`
+/// can be passed directly to any function expecting `&Address`. It also
+/// implements [`std::fmt::Display`] for compact name rendering, and provides
+/// [`Actor::diagnostic`] for formatting both name and raw address together.
+///
+/// # Example
+///
+/// ```
+/// use soroban_testkit::core::TestEnv;
+///
+/// let env = TestEnv::new();
+/// let alice = env.actor("alice");
+///
+/// assert_eq!(alice.name(), "alice");
+/// assert_eq!(format!("{alice}"), "alice");
+/// assert!(alice.diagnostic().starts_with("alice ("));
+///
+/// // Deref to Address works seamlessly:
+/// let addr: &soroban_sdk::Address = &alice;
+/// assert_eq!(addr, alice.address());
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Actor {
+    name: String,
+    address: Address,
+}
+
+impl Actor {
+    /// Construct a new `Actor` with the given name and address.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::{Actor, TestEnv};
+    ///
+    /// let env = TestEnv::new();
+    /// let actor = Actor::new("bob", env.address());
+    /// assert_eq!(actor.name(), "bob");
+    /// ```
+    pub fn new(name: impl Into<String>, address: Address) -> Self {
+        Self {
+            name: name.into(),
+            address,
+        }
+    }
+
+    /// The human-readable name identifying this actor.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let admin = env.actor("admin");
+    /// assert_eq!(admin.name(), "admin");
+    /// ```
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The underlying Soroban [`Address`] assigned to this actor.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let alice = env.actor("alice");
+    /// assert_eq!(alice.address(), &*alice);
+    /// ```
+    pub fn address(&self) -> &Address {
+        &self.address
+    }
+
+    /// Consume the actor, returning its inner [`Address`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let alice = env.actor("alice");
+    /// let _addr = alice.into_address();
+    /// ```
+    pub fn into_address(self) -> Address {
+        self.address
+    }
+
+    /// Return a formatted diagnostic string pairing the actor name with its
+    /// raw address, suitable for detailed assertion failure reports.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let alice = env.actor("alice");
+    /// assert!(alice.diagnostic().starts_with("alice ("));
+    /// ```
+    pub fn diagnostic(&self) -> String {
+        format!("{} ({:?})", self.name, self.address)
+    }
+}
+
+impl std::ops::Deref for Actor {
+    type Target = Address;
+
+    fn deref(&self) -> &Self::Target {
+        &self.address
+    }
+}
+
+impl AsRef<Address> for Actor {
+    fn as_ref(&self) -> &Address {
+        &self.address
+    }
+}
+
+impl std::fmt::Display for Actor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
+impl PartialEq<Address> for Actor {
+    fn eq(&self, other: &Address) -> bool {
+        &self.address == other
+    }
+}
+
+impl PartialEq<Actor> for Address {
+    fn eq(&self, other: &Actor) -> bool {
+        self == &other.address
+    }
+}
+
+/// An infinite iterator yielding fresh, distinct [`Address`] values on each step.
+///
+/// Standard iterator adapters such as [`.take(n)`](Iterator::take) can be chained
+/// directly onto `AddressIter` to produce a stream of addresses without needing
+/// to allocate an intermediate vector.
+///
+/// # Example
+///
+/// ```
+/// use soroban_testkit::core::TestEnv;
+///
+/// let env = TestEnv::new();
+/// let addrs: Vec<_> = env.address_iter().take(3).collect();
+/// assert_eq!(addrs.len(), 3);
+/// assert_ne!(addrs[0], addrs[1]);
+/// ```
+#[derive(Clone)]
+pub struct AddressIter<'a> {
+    env: &'a TestEnv,
+}
+
+impl<'a> AddressIter<'a> {
+    /// Create a new `AddressIter` bound to the given environment.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::{AddressIter, TestEnv};
+    ///
+    /// let env = TestEnv::new();
+    /// let mut iter = AddressIter::new(&env);
+    /// let _first = iter.next().unwrap();
+    /// ```
+    pub fn new(env: &'a TestEnv) -> Self {
+        Self { env }
+    }
+}
+
+impl<'a> Iterator for AddressIter<'a> {
+    type Item = Address;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(self.env.address())
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (usize::MAX, None)
+    }
+}
+
+impl<'a> std::iter::FusedIterator for AddressIter<'a> {}
 
 #[cfg(test)]
 mod tests {
@@ -481,5 +903,217 @@ mod tests {
         env.advance_ledgers(5);
         assert_eq!(env.sequence(), before + 5);
         assert_ne!(env.address(), env.address());
+    }
+
+    // --- Named actor generation (#36) -----------------------------------
+
+    #[test]
+    fn actor_creates_actor_with_expected_name_and_address() {
+        let env = TestEnv::new();
+        let alice = env.actor("alice");
+        assert_eq!(alice.name(), "alice");
+        assert_eq!(alice.address(), &*alice);
+        assert_eq!(format!("{alice}"), "alice");
+    }
+
+    #[test]
+    fn actor_diagnostic_formats_name_and_debug_address() {
+        let env = TestEnv::new();
+        let alice = env.actor("alice");
+        let diag = alice.diagnostic();
+        assert!(diag.starts_with("alice ("));
+        assert!(diag.ends_with(')'));
+    }
+
+    #[test]
+    fn actor_derefs_and_compares_with_address() {
+        let env = TestEnv::new();
+        let alice = env.actor("alice");
+        let raw_addr: &Address = &alice;
+        assert_eq!(raw_addr, alice.address());
+        assert_eq!(alice, *alice.address());
+        assert_eq!(*alice.address(), alice);
+
+        let bob = env.actor("bob");
+        assert_ne!(alice, bob);
+    }
+
+    #[test]
+    fn actor_into_address_returns_underlying_address() {
+        let env = TestEnv::new();
+        let alice = env.actor("alice");
+        let expected = alice.address().clone();
+        assert_eq!(alice.into_address(), expected);
+    }
+
+    #[test]
+    fn try_actor_accepts_valid_names() {
+        let env = TestEnv::new();
+        assert!(env.try_actor("alice").is_ok());
+        assert!(env.try_actor("treasury_1").is_ok());
+        assert!(env.try_named_actor("admin").is_ok());
+    }
+
+    #[test]
+    fn try_actor_rejects_empty_or_whitespace_names() {
+        let env = TestEnv::new();
+        let err_empty = env.try_actor("").unwrap_err();
+        assert_eq!(err_empty.code(), "TESTKIT_MISUSE");
+        assert_eq!(
+            err_empty.message(),
+            "actor name cannot be empty or only whitespace"
+        );
+
+        let err_space = env.try_actor("   \t\n").unwrap_err();
+        assert_eq!(err_space.code(), "TESTKIT_MISUSE");
+    }
+
+    #[test]
+    #[should_panic(expected = "actor name cannot be empty or only whitespace")]
+    fn actor_panics_on_empty_name() {
+        let env = TestEnv::new();
+        let _ = env.actor("");
+    }
+
+    #[test]
+    #[should_panic(expected = "actor name cannot be empty or only whitespace")]
+    fn named_actor_panics_on_whitespace_name() {
+        let env = TestEnv::new();
+        let _ = env.named_actor("   ");
+    }
+
+    #[test]
+    fn actors_batch_generates_distinct_actors() {
+        let env = TestEnv::new();
+        let actors = env.actors(&["alice", "bob", "charlie"]);
+        assert_eq!(actors.len(), 3);
+        assert_eq!(actors[0].name(), "alice");
+        assert_eq!(actors[1].name(), "bob");
+        assert_eq!(actors[2].name(), "charlie");
+        assert_ne!(actors[0].address(), actors[1].address());
+        assert_ne!(actors[1].address(), actors[2].address());
+        assert_ne!(actors[0].address(), actors[2].address());
+    }
+
+    #[test]
+    fn try_actors_rejects_duplicate_names() {
+        let env = TestEnv::new();
+        let err = env.try_actors(&["alice", "bob", "alice"]).unwrap_err();
+        assert_eq!(err.code(), "TESTKIT_MISUSE");
+        assert!(err.message().contains("duplicate actor name \"alice\""));
+    }
+
+    #[test]
+    fn try_actors_rejects_blank_name() {
+        let env = TestEnv::new();
+        let err = env.try_actors(&["alice", ""]).unwrap_err();
+        assert_eq!(err.code(), "TESTKIT_MISUSE");
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate actor name")]
+    fn actors_panics_on_duplicate_name() {
+        let env = TestEnv::new();
+        let _ = env.actors(&["admin", "admin"]);
+    }
+
+    // --- Address iterator (#37) -----------------------------------------
+
+    #[test]
+    fn address_iter_yields_fresh_distinct_addresses() {
+        let env = TestEnv::new();
+        let addrs: Vec<Address> = env.address_iter().take(5).collect();
+        assert_eq!(addrs.len(), 5);
+        for i in 0..addrs.len() {
+            for j in (i + 1)..addrs.len() {
+                assert_ne!(addrs[i], addrs[j]);
+            }
+        }
+    }
+
+    #[test]
+    fn addresses_iter_alias_behaves_identically() {
+        let env = TestEnv::new();
+        let mut iter = env.addresses_iter();
+        let a = iter.next().unwrap();
+        let b = iter.next().unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn address_iter_reproducible_with_seed() {
+        let env1 = TestEnv::with_seed(12345);
+        let env2 = TestEnv::with_seed(12345);
+        let seq1: Vec<Address> = env1.address_iter().take(4).collect();
+        let seq2: Vec<Address> = env2.address_iter().take(4).collect();
+        assert_eq!(seq1, seq2);
+    }
+
+    #[test]
+    fn address_iter_size_hint_and_cloning() {
+        let env = TestEnv::new();
+        let iter = env.address_iter();
+        let (lower, upper) = iter.size_hint();
+        assert_eq!(lower, usize::MAX);
+        assert_eq!(upper, None);
+
+        let mut iter_clone = iter.clone();
+        assert!(iter_clone.next().is_some());
+    }
+
+    // --- Checked address batch API (#38) --------------------------------
+
+    #[test]
+    fn try_addresses_succeeds_for_valid_batch_sizes() {
+        let env = TestEnv::new();
+        let one = env.try_addresses(1).unwrap();
+        assert_eq!(one.len(), 1);
+
+        let five = env.try_addresses(5).unwrap();
+        assert_eq!(five.len(), 5);
+        for i in 0..five.len() {
+            for j in (i + 1)..five.len() {
+                assert_ne!(five[i], five[j]);
+            }
+        }
+    }
+
+    #[test]
+    fn checked_addresses_alias_succeeds() {
+        let env = TestEnv::new();
+        let res = env.checked_addresses(3);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().len(), 3);
+    }
+
+    #[test]
+    fn try_addresses_rejects_zero_count() {
+        let env = TestEnv::new();
+        let err = env.try_addresses(0).unwrap_err();
+        assert_eq!(err.code(), "TESTKIT_MISUSE");
+        assert_eq!(
+            err.message(),
+            "address batch size must be at least 1; requested 0 addresses"
+        );
+    }
+
+    #[test]
+    fn try_addresses_rejects_excessive_batch_size() {
+        let env = TestEnv::new();
+        let err = env.try_addresses(MAX_ADDRESS_BATCH_SIZE + 1).unwrap_err();
+        assert_eq!(err.code(), "TESTKIT_MISUSE");
+        assert!(err.message().contains("exceeds the maximum limit"));
+
+        let err_max = env.try_addresses(usize::MAX).unwrap_err();
+        assert_eq!(err_max.code(), "TESTKIT_MISUSE");
+    }
+
+    #[test]
+    fn try_addresses_reproducible_for_same_seed() {
+        let env1 = TestEnv::with_seed(999);
+        let env2 = TestEnv::with_seed(999);
+        let batch1 = env1.try_addresses(4).unwrap();
+        let batch2 = env2.try_addresses(4).unwrap();
+        assert_eq!(batch1, batch2);
     }
 }
