@@ -297,6 +297,7 @@ impl TestkitError {
             TestkitError::AssertionFailed { .. } => "AssertionFailed",
             TestkitError::DecodeFailed { .. } => "DecodeFailed",
             TestkitError::Misuse { .. } => "Misuse",
+            TestkitError::Context { source, .. } => source.kind(),
         }
     }
 

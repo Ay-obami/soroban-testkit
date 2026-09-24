@@ -1406,7 +1406,7 @@ mod tests {
     #[test]
     fn construction_cost_stays_close_to_the_raw_sdk_env() {
         let raw = benchmark_batch(|_| {
-            black_box(TestEnv::fresh_env());
+            black_box(TestEnv::fresh_env_with_defaults(&LedgerDefaults::default()));
         });
         let wrapped = benchmark_batch(|i| {
             black_box(TestEnv::with_seed(i as u64));

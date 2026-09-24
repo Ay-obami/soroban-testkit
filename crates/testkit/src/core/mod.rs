@@ -47,8 +47,7 @@ mod env;
 mod error;
 
 pub use env::{
-    Actor, AddressIter, EnvMetadata, LedgerDefaults, TestEnv, TestFixture,
-    MAX_ADDRESS_BATCH_SIZE,
+    Actor, AddressIter, EnvMetadata, LedgerDefaults, TestEnv, TestFixture, MAX_ADDRESS_BATCH_SIZE,
 };
 pub use error::TestkitError;
 
