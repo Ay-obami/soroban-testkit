@@ -140,3 +140,5 @@ mainnet/testnet forking for tests. That is a different problem;
 Apache-2.0
 add validation coverage for the recurring contract
 add validation coverage for the batch payout auth model
+
+add a line-count and coverage comparison to validation

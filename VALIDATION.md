@@ -157,3 +157,5 @@ else needed checking":
   publish to sororail-contracts, and wasn't asked to.
 add validation coverage for the recurring contract
 add validation coverage for the batch payout auth model
+
+add a line-count and coverage comparison to validation

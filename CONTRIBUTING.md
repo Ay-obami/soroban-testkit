@@ -93,3 +93,5 @@ Labeled `good-first-issue`. Module 7 (`ttl`) is not beginner-friendly and
 is never labeled as such.
 add validation coverage for the recurring contract
 add validation coverage for the batch payout auth model
+
+add a line-count and coverage comparison to validation
