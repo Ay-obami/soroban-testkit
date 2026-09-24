@@ -65,11 +65,16 @@ pub struct CoverageArgs {
 pub fn run(args: CoverageArgs) -> Result<(), CliError> {
     let mut cmd = build_command(&args)?;
 
-    let status = cmd.status().map_err(|err| {
-        CliError(format!(
+    let status = cmd.status().map_err(|err| match err.kind() {
+        std::io::ErrorKind::NotFound => CliError(
+            "cargo-llvm-cov is not installed or not found in PATH; \
+                     install it with: cargo install cargo-llvm-cov"
+                .to_string(),
+        ),
+        _ => CliError(format!(
             "failed to run `cargo llvm-cov` ({err}); is cargo-llvm-cov installed? \
-             try `cargo install cargo-llvm-cov`"
-        ))
+                 try `cargo install cargo-llvm-cov`"
+        )),
     })?;
 
     if !status.success() {
@@ -273,6 +278,44 @@ mod tests {
         assert_eq!(
             rendered,
             vec!["llvm-cov", "test", "--html", "--output-dir", "./coverage",]
+        );
+    }
+
+    #[test]
+    fn output_dir_with_spaces_in_path_lcov() {
+        let mut a = args(&[], &[]);
+        a.format = Format::Lcov;
+        a.output_dir = Some(std::path::PathBuf::from("./my coverage dir"));
+        let cmd = build_command(&a).unwrap();
+        let rendered = rendered_args(&cmd);
+        assert_eq!(
+            rendered,
+            vec![
+                "llvm-cov",
+                "test",
+                "--lcov",
+                "--output-path",
+                "./my coverage dir/lcov.info",
+            ]
+        );
+    }
+
+    #[test]
+    fn output_dir_with_spaces_in_path_html() {
+        let mut a = args(&[], &[]);
+        a.format = Format::Html;
+        a.output_dir = Some(std::path::PathBuf::from("./my coverage results"));
+        let cmd = build_command(&a).unwrap();
+        let rendered = rendered_args(&cmd);
+        assert_eq!(
+            rendered,
+            vec![
+                "llvm-cov",
+                "test",
+                "--html",
+                "--output-dir",
+                "./my coverage results",
+            ]
         );
     }
 }
