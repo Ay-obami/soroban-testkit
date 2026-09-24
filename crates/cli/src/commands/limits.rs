@@ -123,6 +123,8 @@ pub fn run(args: LimitsArgs) -> Result<(), CliError> {
 
     let probe_timeout = Duration::from_secs(args.probe_timeout);
     let mut any_probe_timed_out = false;
+    let mut last_failed_probe: Option<u32> = None;
+    let mut hit_upper_bound = false;
 
     let mut probe = |value: u32| -> Result<bool, CliError> {
         let mut child = Command::new(&self_exe)
@@ -153,6 +155,7 @@ pub fn run(args: LimitsArgs) -> Result<(), CliError> {
     let mut last_ok: Option<u32> = None;
     let mut low = 1u32;
     let mut high = None;
+    const UPPER_BOUND: u32 = 1 << 24;
     loop {
         if probe(low)? {
             last_ok = Some(low);
@@ -164,10 +167,12 @@ pub fn run(args: LimitsArgs) -> Result<(), CliError> {
                 }
             }
         } else {
+            last_failed_probe = Some(low);
             high = Some(low);
             break;
         }
-        if low > 1 << 24 {
+        if low > UPPER_BOUND {
+            hit_upper_bound = true;
             break;
         }
     }
@@ -190,6 +195,7 @@ pub fn run(args: LimitsArgs) -> Result<(), CliError> {
             if probe(mid)? {
                 lo = mid;
             } else {
+                last_failed_probe = Some(mid);
                 hi = mid;
             }
         }
@@ -206,10 +212,20 @@ pub fn run(args: LimitsArgs) -> Result<(), CliError> {
     );
     println!("  instructions: {instructions}");
     println!("  memory bytes: {memory_bytes}");
+    if let Some(failed) = last_failed_probe {
+        println!("  first failed {} value: {failed}", args.ramp);
+    }
     println!(
         "  (ledger reads/writes and transaction size are not measured by this command; \
          see --help)"
     );
+    if hit_upper_bound {
+        println!(
+            "  note: search stopped at the built-in upper bound ({}); the contract may support \
+             higher ramp values",
+            UPPER_BOUND
+        );
+    }
     if any_probe_timed_out {
         println!(
             "  note: at least one probe was killed for exceeding --probe-timeout ({}s); the \
@@ -662,7 +678,7 @@ fn ramp_val(env: &Env, type_: &ScSpecTypeDef, ramp_value: u32) -> Result<Val, Cl
             let element = vec_element_val(env, &inner.element_type)?;
             let mut items = SVec::new(env);
             for _ in 0..ramp_value {
-                items.push_back(element.clone());
+                items.push_back(element);
             }
             Ok(items.into_val(env))
         }
@@ -1031,5 +1047,55 @@ mod tests {
         assert_eq!(baseline.best, 100);
         assert_eq!(baseline.instructions, 1_000_000);
         assert_eq!(baseline.memory_bytes, 50_000);
+    }
+
+    // ---- #233: paths with spaces ----
+
+    #[test]
+    fn write_baseline_handles_paths_with_spaces() {
+        let dir = std::env::temp_dir().join(format!("stk baseline test {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("my baseline.txt");
+
+        write_baseline(&path, "recipients", "batch_payout", 100, 1_000_000, 50_000).unwrap();
+
+        let baseline = Baseline::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(baseline.function, "batch_payout");
+        assert_eq!(baseline.ramp, "recipients");
+        assert_eq!(baseline.best, 100);
+    }
+
+    #[test]
+    fn export_results_handles_paths_with_spaces() {
+        let dir = std::env::temp_dir().join(format!("stk export test {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("my export results.txt");
+
+        export_results(&path, "recipients", "batch_payout", 100, 1_000_000, 50_000).unwrap();
+
+        let baseline = Baseline::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(baseline.function, "batch_payout");
+        assert_eq!(baseline.ramp, "recipients");
+        assert_eq!(baseline.best, 100);
+    }
+
+    #[test]
+    fn compare_to_baseline_handles_paths_with_spaces() {
+        let dir = std::env::temp_dir().join(format!("stk compare test {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("my baseline file.txt");
+
+        std::fs::write(&path, sample_baseline().to_file_contents()).unwrap();
+
+        let result = compare_to_baseline(
+            &path,
+            "recipients",
+            "batch_payout",
+            100,
+            1_000_000,
+            50_000,
+            5.0,
+        );
+        assert!(result.is_ok(), "{:?}", result.err());
     }
 }
