@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod completion;
 pub mod coverage;
 pub mod limits;
 
@@ -21,6 +22,8 @@ pub enum Commands {
     Limits(limits::LimitsArgs),
     /// Static checks over a contract crate (not a security product).
     Audit(audit::AuditArgs),
+    /// Generate shell completions for this CLI.
+    Completion(completion::CompletionArgs),
     /// Hidden: runs a single limits probe in its own process. See
     /// `limits::run`'s doc comment for why.
     #[command(name = "__limits-probe", hide = true)]

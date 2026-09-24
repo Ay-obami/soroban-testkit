@@ -35,6 +35,10 @@ pub struct CoverageArgs {
     /// Repeatable. Mutually exclusive with `--include`.
     #[arg(long, value_name = "PACKAGE")]
     exclude: Vec<String>,
+    /// Directory where coverage output files should be written.
+    /// Defaults to the current directory.
+    #[arg(long, value_name = "DIR")]
+    output_dir: Option<std::path::PathBuf>,
 }
 
 /// Wraps `cargo llvm-cov test`, which handles Soroban's coverage needs
@@ -106,10 +110,19 @@ fn build_command(args: &CoverageArgs) -> Result<Command, CliError> {
     match args.format {
         Format::Text => {}
         Format::Lcov => {
-            cmd.arg("--lcov").arg("--output-path").arg("lcov.info");
+            cmd.arg("--lcov");
+            let output_path = if let Some(dir) = &args.output_dir {
+                dir.join("lcov.info")
+            } else {
+                std::path::PathBuf::from("lcov.info")
+            };
+            cmd.arg("--output-path").arg(output_path);
         }
         Format::Html => {
             cmd.arg("--html");
+            if let Some(dir) = &args.output_dir {
+                cmd.arg("--output-dir").arg(dir);
+            }
         }
     }
 
@@ -138,6 +151,7 @@ mod tests {
             open: false,
             include: include.iter().map(|s| s.to_string()).collect(),
             exclude: exclude.iter().map(|s| s.to_string()).collect(),
+            output_dir: None,
         }
     }
 
@@ -227,6 +241,38 @@ mod tests {
                 "--fail-under-lines",
                 "90",
             ]
+        );
+    }
+
+    #[test]
+    fn output_dir_with_lcov_format() {
+        let mut a = args(&[], &[]);
+        a.format = Format::Lcov;
+        a.output_dir = Some(std::path::PathBuf::from("./coverage"));
+        let cmd = build_command(&a).unwrap();
+        let rendered = rendered_args(&cmd);
+        assert_eq!(
+            rendered,
+            vec![
+                "llvm-cov",
+                "test",
+                "--lcov",
+                "--output-path",
+                "./coverage/lcov.info",
+            ]
+        );
+    }
+
+    #[test]
+    fn output_dir_with_html_format() {
+        let mut a = args(&[], &[]);
+        a.format = Format::Html;
+        a.output_dir = Some(std::path::PathBuf::from("./coverage"));
+        let cmd = build_command(&a).unwrap();
+        let rendered = rendered_args(&cmd);
+        assert_eq!(
+            rendered,
+            vec!["llvm-cov", "test", "--html", "--output-dir", "./coverage",]
         );
     }
 }
