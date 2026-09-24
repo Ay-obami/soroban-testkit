@@ -49,3 +49,26 @@ jobs:
             || { echo "CONTRIBUTING.md should reference API_STABILITY.md."; exit 1; }
           grep -Fq "CHANGELOG.md" CONTRIBUTING.md \
             || { echo "CONTRIBUTING.md should reference CHANGELOG.md."; exit 1; }
+
+      - name: crates.io repository metadata matches the repository URL
+        run: |
+          expected="https://github.com/soroban-testkit/soroban-testkit"
+          workspace_repo="$(sed -n 's/^repository = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ "$workspace_repo" != "$expected" ]; then
+            echo "[workspace.package] repository is \"$workspace_repo\" but the repository URL is \"$expected\"."
+            echo "crates.io would link both published crates to the wrong place — update Cargo.toml."
+            exit 1
+          fi
+          for crate in crates/testkit crates/cli; do
+            if ! grep -Eq '^repository\.workspace = true$' "$crate/Cargo.toml"; then
+              echo "$crate/Cargo.toml must inherit the workspace repository with repository.workspace = true,"
+              echo "otherwise its crates.io page would not link to $expected."
+              exit 1
+            fi
+          done
+          offenders="$(grep -Fn 'https://github.com/' CHANGELOG.md | grep -Fv "$expected" || true)"
+          if [ -n "$offenders" ]; then
+            echo "CHANGELOG.md links to a GitHub repository other than $expected:"
+            echo "$offenders"
+            exit 1
+          fi
