@@ -1,5 +1,6 @@
 use std::panic;
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use clap::Args;
 use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
@@ -21,6 +22,30 @@ pub struct LimitsArgs {
     /// The parameter to increase on each attempt.
     #[arg(long, value_name = "PARAM")]
     ramp: String,
+    /// Kill and treat as a failure any single probe that runs longer than
+    /// this many seconds. Guards against a ramp value that hangs the host
+    /// (rather than erroring or aborting) turning `limits` into an
+    /// infinite wait.
+    #[arg(long, value_name = "SECONDS", default_value_t = 30)]
+    probe_timeout: u64,
+    /// Compare this run's result against a baseline previously written by
+    /// `--save-baseline`. Exits non-zero if the discovered ceiling
+    /// regressed (a lower ramp value, or higher instructions/memory) by
+    /// more than `--baseline-tolerance-pct`.
+    #[arg(long, value_name = "PATH")]
+    baseline: Option<std::path::PathBuf>,
+    /// How much instructions/memory are allowed to grow (as a percentage
+    /// of the baseline value) before `--baseline` reports a regression.
+    /// The ramp ceiling itself allows no tolerance: any decrease is a
+    /// regression, since it means the contract now handles *fewer*
+    /// recipients (or whatever the ramp parameter represents) than before.
+    #[arg(long, value_name = "PCT", default_value_t = 5.0)]
+    baseline_tolerance_pct: f64,
+    /// Write this run's result to PATH as a new baseline for future
+    /// `--baseline` comparisons. Combinable with `--baseline` itself, to
+    /// compare against the old baseline and then update it in one run.
+    #[arg(long, value_name = "PATH")]
+    save_baseline: Option<std::path::PathBuf>,
 }
 
 /// Hidden: runs exactly one probe (a single ramp value) and reports its
@@ -60,13 +85,15 @@ pub struct ProbeArgs {
 /// # Scope
 ///
 /// The ramp parameter must be a numeric type (`u32`/`i32`/`u64`/`i64`/
-/// `u128`/`i128`, ramped as the value itself) or `Vec<Address>` (ramped as
-/// the number of generated addresses) — this covers the common "maximum
-/// recipients in a batch operation" question directly. Every other
-/// parameter is filled with a fixed default (an address, `0`, an empty
-/// collection, ...). A parameter type this command doesn't know how to
-/// default (`Map`, `Tuple`, `Option`, `Result`, a user-defined type, ...)
-/// is reported as an error rather than guessed at.
+/// `u128`/`i128`, ramped as the value itself) or `Vec<T>` for a supported
+/// element type `T` (ramped as the element *count*, each element filled
+/// with a fixed value — see [`vec_element_val`]) — this covers the common
+/// "maximum recipients in a batch operation" question directly, for
+/// `Vec<Address>` and beyond. Every other parameter is filled with a fixed
+/// default (an address, `0`, an empty collection, ...). A parameter type
+/// this command doesn't know how to default (`Map`, `Tuple`, `Option`,
+/// `Result`, a user-defined type, ...) is reported as an error rather than
+/// guessed at.
 ///
 /// Ledger read/write counts and transaction size are **not** reported:
 /// they come from a transaction's simulated resource footprint, which
@@ -90,8 +117,11 @@ pub fn run(args: LimitsArgs) -> Result<(), CliError> {
     let self_exe = std::env::current_exe()
         .map_err(|err| CliError(format!("failed to locate this binary: {err}")))?;
 
-    let probe = |value: u32| -> Result<bool, CliError> {
-        let status = Command::new(&self_exe)
+    let probe_timeout = Duration::from_secs(args.probe_timeout);
+    let mut any_probe_timed_out = false;
+
+    let mut probe = |value: u32| -> Result<bool, CliError> {
+        let mut child = Command::new(&self_exe)
             .arg("__limits-probe")
             .arg("--contract")
             .arg(&args.contract)
@@ -103,9 +133,16 @@ pub fn run(args: LimitsArgs) -> Result<(), CliError> {
             .arg(value.to_string())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .status()
+            .spawn()
             .map_err(|err| CliError(format!("failed to spawn probe: {err}")))?;
-        Ok(status.success())
+
+        match wait_with_timeout(&mut child, probe_timeout)? {
+            Some(status) => Ok(status.success()),
+            None => {
+                any_probe_timed_out = true;
+                Ok(false)
+            }
+        }
     };
 
     // Find a failing upper bound by doubling.
@@ -169,6 +206,30 @@ pub fn run(args: LimitsArgs) -> Result<(), CliError> {
         "  (ledger reads/writes and transaction size are not measured by this command; \
          see --help)"
     );
+    if any_probe_timed_out {
+        println!(
+            "  note: at least one probe was killed for exceeding --probe-timeout ({}s); the \
+             discovered ceiling may reflect a hang rather than a real resource limit — rerun \
+             with a larger --probe-timeout to check",
+            args.probe_timeout
+        );
+    }
+
+    if let Some(baseline_path) = &args.baseline {
+        compare_to_baseline(
+            baseline_path,
+            &args.ramp,
+            &args.function,
+            best,
+            instructions,
+            memory_bytes,
+            args.baseline_tolerance_pct,
+        )?;
+    }
+    if let Some(save_path) = &args.save_baseline {
+        write_baseline(save_path, &args.ramp, &args.function, best, instructions, memory_bytes)?;
+        println!("saved baseline to {}", save_path.display());
+    }
 
     Ok(())
 }
@@ -187,6 +248,230 @@ pub fn run_probe(args: ProbeArgs) -> Result<(), CliError> {
     } else {
         Err(CliError("probe failed".to_string()))
     }
+}
+
+/// Waits up to `timeout` for `child` to exit, polling rather than blocking
+/// so an exceeded timeout can kill it instead of waiting forever. Returns
+/// `Some(status)` on a normal exit within the timeout, or `None` if the
+/// child was killed for running too long.
+fn wait_with_timeout(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Result<Option<std::process::ExitStatus>, CliError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|err| CliError(format!("failed to poll probe: {err}")))?
+        {
+            return Ok(Some(status));
+        }
+        if Instant::now() >= deadline {
+            // Best-effort: the process may have exited between the last
+            // try_wait and here, in which case kill() harmlessly errors
+            // (already-exited processes can't be killed) — ignored, since
+            // either way the outcome from here on is "timed out".
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A previously-saved `limits` result, for `--baseline` regression checks.
+/// Deliberately not JSON (no `serde` dependency anywhere in this
+/// workspace) — a flat `key=value` file is sufficient for one flat record
+/// and keeps this feature within its own module boundary.
+struct Baseline {
+    function: String,
+    ramp: String,
+    best: u32,
+    instructions: u64,
+    memory_bytes: u64,
+}
+
+impl Baseline {
+    fn to_file_contents(&self) -> String {
+        format!(
+            "function={}\nramp={}\nbest={}\ninstructions={}\nmemory_bytes={}\n",
+            self.function, self.ramp, self.best, self.instructions, self.memory_bytes
+        )
+    }
+
+    fn parse(contents: &str) -> Result<Self, CliError> {
+        let mut function = None;
+        let mut ramp = None;
+        let mut best = None;
+        let mut instructions = None;
+        let mut memory_bytes = None;
+
+        for (line_no, line) in contents.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                return Err(CliError(format!(
+                    "malformed baseline file at line {}: expected key=value, got {line:?}",
+                    line_no + 1
+                )));
+            };
+            match key {
+                "function" => function = Some(value.to_string()),
+                "ramp" => ramp = Some(value.to_string()),
+                "best" => {
+                    best = Some(value.parse::<u32>().map_err(|err| {
+                        CliError(format!("malformed baseline `best` value {value:?}: {err}"))
+                    })?)
+                }
+                "instructions" => {
+                    instructions = Some(value.parse::<u64>().map_err(|err| {
+                        CliError(format!(
+                            "malformed baseline `instructions` value {value:?}: {err}"
+                        ))
+                    })?)
+                }
+                "memory_bytes" => {
+                    memory_bytes = Some(value.parse::<u64>().map_err(|err| {
+                        CliError(format!(
+                            "malformed baseline `memory_bytes` value {value:?}: {err}"
+                        ))
+                    })?)
+                }
+                other => {
+                    return Err(CliError(format!(
+                        "malformed baseline file at line {}: unknown key {other:?}",
+                        line_no + 1
+                    )))
+                }
+            }
+        }
+
+        Ok(Baseline {
+            function: function
+                .ok_or_else(|| CliError("baseline file is missing `function`".to_string()))?,
+            ramp: ramp.ok_or_else(|| CliError("baseline file is missing `ramp`".to_string()))?,
+            best: best.ok_or_else(|| CliError("baseline file is missing `best`".to_string()))?,
+            instructions: instructions
+                .ok_or_else(|| CliError("baseline file is missing `instructions`".to_string()))?,
+            memory_bytes: memory_bytes
+                .ok_or_else(|| CliError("baseline file is missing `memory_bytes`".to_string()))?,
+        })
+    }
+}
+
+fn write_baseline(
+    path: &std::path::Path,
+    ramp: &str,
+    function: &str,
+    best: u32,
+    instructions: u64,
+    memory_bytes: u64,
+) -> Result<(), CliError> {
+    let baseline = Baseline {
+        function: function.to_string(),
+        ramp: ramp.to_string(),
+        best,
+        instructions,
+        memory_bytes,
+    };
+    std::fs::write(path, baseline.to_file_contents()).map_err(|err| {
+        CliError(format!(
+            "failed to write baseline to {}: {err}",
+            path.display()
+        ))
+    })
+}
+
+/// Compares this run's result against the baseline saved at `path`, printing
+/// a before/after summary and returning an error (which `main` turns into a
+/// non-zero exit) if it regressed beyond `--baseline-tolerance-pct`.
+fn compare_to_baseline(
+    path: &std::path::Path,
+    ramp: &str,
+    function: &str,
+    best: u32,
+    instructions: u64,
+    memory_bytes: u64,
+    tolerance_pct: f64,
+) -> Result<(), CliError> {
+    let contents = std::fs::read_to_string(path).map_err(|err| {
+        CliError(format!(
+            "failed to read baseline at {}: {err}",
+            path.display()
+        ))
+    })?;
+    let baseline = Baseline::parse(&contents)?;
+
+    if baseline.function != function || baseline.ramp != ramp {
+        return Err(CliError(format!(
+            "baseline at {} was recorded for {:?}/{:?}, not {function:?}/{ramp:?}; comparing \
+             across different functions or ramp parameters isn't meaningful",
+            path.display(),
+            baseline.function,
+            baseline.ramp
+        )));
+    }
+
+    println!("baseline comparison ({}):", path.display());
+    println!("  {ramp}: {} -> {best}", baseline.best);
+    println!("  instructions: {} -> {instructions}", baseline.instructions);
+    println!("  memory bytes: {} -> {memory_bytes}", baseline.memory_bytes);
+
+    let mut regressions = Vec::new();
+    if best < baseline.best {
+        regressions.push(format!(
+            "{ramp} ceiling dropped from {} to {best}",
+            baseline.best
+        ));
+    }
+    check_metric_regression(
+        "instructions",
+        baseline.instructions,
+        instructions,
+        tolerance_pct,
+        &mut regressions,
+    );
+    check_metric_regression(
+        "memory bytes",
+        baseline.memory_bytes,
+        memory_bytes,
+        tolerance_pct,
+        &mut regressions,
+    );
+
+    fn check_metric_regression(
+        name: &str,
+        old: u64,
+        new: u64,
+        tolerance_pct: f64,
+        out: &mut Vec<String>,
+    ) {
+        if new <= old {
+            return;
+        }
+        let growth_pct = ((new - old) as f64 / old.max(1) as f64) * 100.0;
+        if growth_pct <= tolerance_pct {
+            return;
+        }
+        out.push(format!(
+            "{name} grew from {old} to {new} ({growth_pct:.1}%, over the {tolerance_pct:.1}% tolerance)"
+        ));
+    }
+
+    if regressions.is_empty() {
+        println!("  no regression");
+        return Ok(());
+    }
+
+    // Instruction/memory growth within tolerance is reported above but not
+    // treated as a regression; only the ramp-ceiling check and
+    // over-tolerance growth fail the run.
+    Err(CliError(format!(
+        "baseline regression detected: {}",
+        regressions.join("; ")
+    )))
 }
 
 fn measure(args: &LimitsArgs, value: u32) -> Result<(u64, u64), CliError> {
@@ -315,16 +600,50 @@ fn ramp_val(env: &Env, type_: &ScSpecTypeDef, ramp_value: u32) -> Result<Val, Cl
         ScSpecTypeDef::I64 => Ok((ramp_value as i64).into_val(env)),
         ScSpecTypeDef::U128 => Ok((ramp_value as u128).into_val(env)),
         ScSpecTypeDef::I128 => Ok((ramp_value as i128).into_val(env)),
-        ScSpecTypeDef::Vec(inner) if matches!(*inner.element_type, ScSpecTypeDef::Address) => {
-            let mut addrs = SVec::new(env);
+        // Any Vec<T> is ramped as its element *count*, filled with a fixed
+        // per-element value from `vec_element_val` — the same "maximum
+        // recipients" shape as the original Vec<Address>-only support, now
+        // generalized to any element type this command already knows how
+        // to default. The element value itself never varies across the
+        // ramp; only the count does.
+        ScSpecTypeDef::Vec(inner) => {
+            let element = vec_element_val(env, &inner.element_type)?;
+            let mut items = SVec::new(env);
             for _ in 0..ramp_value {
-                addrs.push_back(Address::generate(env));
+                items.push_back(element.clone());
             }
-            Ok(addrs.into_val(env))
+            Ok(items.into_val(env))
         }
         other => Err(CliError(format!(
             "the ramp parameter's type ({other:?}) isn't supported yet; supported ramp types \
-             are u32/i32/u64/i64/u128/i128 and Vec<Address>"
+             are u32/i32/u64/i64/u128/i128 and Vec<T> (for the element types listed in \
+             the Vec<T> element-type error, if T itself isn't supported)"
+        ))),
+    }
+}
+
+/// A fixed filler value for one element of a ramped `Vec<T>`. Deliberately
+/// narrower than [`default_val`]: it has no `admin`/`input` context (an
+/// element has no parameter name to apply the `token`-heuristic to, and
+/// nothing meaningfully "ramps" as a nested Vec-of-Vec's inner count), so
+/// unsupported element types are reported explicitly rather than silently
+/// reusing a heuristic that wouldn't make sense at this level.
+fn vec_element_val(env: &Env, type_: &ScSpecTypeDef) -> Result<Val, CliError> {
+    match type_ {
+        ScSpecTypeDef::Address => Ok(Address::generate(env).into_val(env)),
+        ScSpecTypeDef::Bool => Ok(false.into_val(env)),
+        ScSpecTypeDef::U32 => Ok(1u32.into_val(env)),
+        ScSpecTypeDef::I32 => Ok(1i32.into_val(env)),
+        ScSpecTypeDef::U64 => Ok(1u64.into_val(env)),
+        ScSpecTypeDef::I64 => Ok(1i64.into_val(env)),
+        ScSpecTypeDef::U128 => Ok(1u128.into_val(env)),
+        ScSpecTypeDef::I128 => Ok(1i128.into_val(env)),
+        ScSpecTypeDef::Symbol => Ok(Symbol::new(env, "x").into_val(env)),
+        ScSpecTypeDef::String => Ok(soroban_sdk::String::from_str(env, "").into_val(env)),
+        ScSpecTypeDef::Bytes => Ok(soroban_sdk::Bytes::new(env).into_val(env)),
+        other => Err(CliError(format!(
+            "Vec<{other:?}> isn't supported as a ramp parameter yet; supported Vec<T> element \
+             types are Address/Bool/u32/i32/u64/i64/u128/i128/Symbol/String/Bytes"
         ))),
     }
 }
@@ -389,5 +708,200 @@ fn default_val(
              today, every other parameter needs a supported default type",
             input.name.to_utf8_string_lossy()
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::xdr::ScSpecTypeVec;
+
+    // ---- #239: Vec<T> ramp support ----
+
+    #[test]
+    fn ramp_val_vec_address_produces_the_requested_count() {
+        let env = Env::default();
+        let type_ = ScSpecTypeDef::Vec(Box::new(ScSpecTypeVec {
+            element_type: Box::new(ScSpecTypeDef::Address),
+        }));
+        let val = ramp_val(&env, &type_, 5).unwrap();
+        let vec: SVec<Address> = val.into_val(&env);
+        assert_eq!(vec.len(), 5);
+    }
+
+    #[test]
+    fn ramp_val_vec_u32_produces_the_requested_count() {
+        let env = Env::default();
+        let type_ = ScSpecTypeDef::Vec(Box::new(ScSpecTypeVec {
+            element_type: Box::new(ScSpecTypeDef::U32),
+        }));
+        let val = ramp_val(&env, &type_, 7).unwrap();
+        let vec: SVec<u32> = val.into_val(&env);
+        assert_eq!(vec.len(), 7);
+        assert_eq!(vec.get(0), Some(1u32));
+    }
+
+    #[test]
+    fn ramp_val_vec_of_zero_is_an_empty_vec() {
+        let env = Env::default();
+        let type_ = ScSpecTypeDef::Vec(Box::new(ScSpecTypeVec {
+            element_type: Box::new(ScSpecTypeDef::Symbol),
+        }));
+        let val = ramp_val(&env, &type_, 0).unwrap();
+        let vec: SVec<Symbol> = val.into_val(&env);
+        assert!(vec.is_empty());
+    }
+
+    #[test]
+    fn ramp_val_rejects_vec_of_unsupported_element_type() {
+        let env = Env::default();
+        let type_ = ScSpecTypeDef::Vec(Box::new(ScSpecTypeVec {
+            element_type: Box::new(ScSpecTypeDef::Vec(Box::new(ScSpecTypeVec {
+                element_type: Box::new(ScSpecTypeDef::U32),
+            }))),
+        }));
+        let err = ramp_val(&env, &type_, 3).unwrap_err();
+        assert!(err.0.contains("isn't supported"), "{}", err.0);
+    }
+
+    #[test]
+    fn ramp_val_rejects_an_unsupported_scalar_type() {
+        let env = Env::default();
+        let err = ramp_val(&env, &ScSpecTypeDef::Void, 1).unwrap_err();
+        assert!(err.0.contains("isn't supported yet"), "{}", err.0);
+    }
+
+    // ---- #245: baseline comparison ----
+
+    fn sample_baseline() -> Baseline {
+        Baseline {
+            function: "batch_payout".to_string(),
+            ramp: "recipients".to_string(),
+            best: 100,
+            instructions: 1_000_000,
+            memory_bytes: 50_000,
+        }
+    }
+
+    #[test]
+    fn baseline_round_trips_through_its_file_format() {
+        let baseline = sample_baseline();
+        let parsed = Baseline::parse(&baseline.to_file_contents()).unwrap();
+        assert_eq!(parsed.function, baseline.function);
+        assert_eq!(parsed.ramp, baseline.ramp);
+        assert_eq!(parsed.best, baseline.best);
+        assert_eq!(parsed.instructions, baseline.instructions);
+        assert_eq!(parsed.memory_bytes, baseline.memory_bytes);
+    }
+
+    #[test]
+    fn baseline_parse_rejects_a_missing_field() {
+        let err = Baseline::parse("function=f\nramp=r\nbest=1\n").unwrap_err();
+        assert!(err.0.contains("missing `instructions`"), "{}", err.0);
+    }
+
+    #[test]
+    fn baseline_parse_rejects_an_unknown_key() {
+        let err = Baseline::parse("function=f\nramp=r\nbest=1\nbogus=2\n").unwrap_err();
+        assert!(err.0.contains("unknown key"), "{}", err.0);
+    }
+
+    #[test]
+    fn baseline_parse_rejects_a_malformed_line() {
+        let err = Baseline::parse("not-a-key-value-line\n").unwrap_err();
+        assert!(err.0.contains("malformed baseline file"), "{}", err.0);
+    }
+
+    #[test]
+    fn compare_to_baseline_passes_when_nothing_regressed() {
+        let dir = std::env::temp_dir().join(format!("stk-baseline-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pass.baseline");
+        std::fs::write(&path, sample_baseline().to_file_contents()).unwrap();
+
+        let result = compare_to_baseline(&path, "recipients", "batch_payout", 100, 1_000_000, 50_000, 5.0);
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[test]
+    fn compare_to_baseline_fails_when_the_ramp_ceiling_drops() {
+        let dir = std::env::temp_dir().join(format!("stk-baseline-{}-2", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ceiling-drop.baseline");
+        std::fs::write(&path, sample_baseline().to_file_contents()).unwrap();
+
+        let err = compare_to_baseline(&path, "recipients", "batch_payout", 90, 1_000_000, 50_000, 5.0)
+            .unwrap_err();
+        assert!(err.0.contains("ceiling dropped from 100 to 90"), "{}", err.0);
+    }
+
+    #[test]
+    fn compare_to_baseline_fails_when_instructions_grow_past_tolerance() {
+        let dir = std::env::temp_dir().join(format!("stk-baseline-{}-3", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("instr-grow.baseline");
+        std::fs::write(&path, sample_baseline().to_file_contents()).unwrap();
+
+        // +10% instructions, tolerance is 5%.
+        let err = compare_to_baseline(&path, "recipients", "batch_payout", 100, 1_100_000, 50_000, 5.0)
+            .unwrap_err();
+        assert!(err.0.contains("instructions grew"), "{}", err.0);
+    }
+
+    #[test]
+    fn compare_to_baseline_allows_growth_within_tolerance() {
+        let dir = std::env::temp_dir().join(format!("stk-baseline-{}-4", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("within-tolerance.baseline");
+        std::fs::write(&path, sample_baseline().to_file_contents()).unwrap();
+
+        // +2% instructions, tolerance is 5%.
+        let result = compare_to_baseline(&path, "recipients", "batch_payout", 100, 1_020_000, 50_000, 5.0);
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    #[test]
+    fn compare_to_baseline_rejects_a_mismatched_function_or_ramp() {
+        let dir = std::env::temp_dir().join(format!("stk-baseline-{}-5", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mismatch.baseline");
+        std::fs::write(&path, sample_baseline().to_file_contents()).unwrap();
+
+        let err =
+            compare_to_baseline(&path, "amount", "batch_payout", 100, 1_000_000, 50_000, 5.0)
+                .unwrap_err();
+        assert!(err.0.contains("was recorded for"), "{}", err.0);
+    }
+
+    #[test]
+    fn compare_to_baseline_reports_a_missing_file_actionably() {
+        let missing = std::env::temp_dir().join("this-baseline-does-not-exist.baseline");
+        let err =
+            compare_to_baseline(&missing, "recipients", "batch_payout", 100, 1_000_000, 50_000, 5.0)
+                .unwrap_err();
+        assert!(err.0.contains("failed to read baseline"), "{}", err.0);
+    }
+
+    // ---- #243: per-probe timeout ----
+
+    #[test]
+    fn wait_with_timeout_returns_the_exit_status_for_a_fast_process() {
+        let mut child = Command::new("true").spawn().unwrap();
+        let status = wait_with_timeout(&mut child, Duration::from_secs(5))
+            .unwrap()
+            .expect("should not have timed out");
+        assert!(status.success());
+    }
+
+    #[test]
+    fn wait_with_timeout_kills_and_returns_none_for_a_slow_process() {
+        let mut child = Command::new("sleep").arg("5").spawn().unwrap();
+        let start = Instant::now();
+        let result = wait_with_timeout(&mut child, Duration::from_millis(200)).unwrap();
+        assert!(result.is_none());
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "should have killed the child near the timeout, not waited for it to finish"
+        );
     }
 }
