@@ -1368,6 +1368,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "quickstart"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+ "soroban-testkit",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
