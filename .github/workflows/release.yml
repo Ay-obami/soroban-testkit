@@ -1,0 +1,112 @@
+name: Release
+
+# Automates the release checklist in RELEASING.md for both workspace
+# crates (soroban-testkit library, then soroban-testkit-cli). Refuses to
+# publish if the release-critical invariants fail: tag/version agreement,
+# a changelog section for the version, and a current compatibility matrix.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version being released (e.g. 0.1.1); must match [workspace.package] version in Cargo.toml'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  checklist:
+    name: Release checklist
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve intended version
+        id: resolve
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            tag="${GITHUB_REF_NAME#v}"
+          else
+            tag="${{ github.event.inputs.version }}"
+          fi
+          if [ -z "$tag" ]; then
+            echo "A version is required: push a 'v*' tag or pass the version input to workflow_dispatch."
+            exit 1
+          fi
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Workspace version matches the tag
+        run: |
+          workspace="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          expected="${{ steps.resolve.outputs.version }}"
+          if [ "$workspace" != "$expected" ]; then
+            echo "Tag requests $expected but [workspace.package] version is $workspace."
+            echo "Bump Cargo.toml and move the CHANGELOG [Unreleased] entry into a dated section, in one commit."
+            exit 1
+          fi
+
+      - name: CHANGELOG has a section for this version
+        run: |
+          version="${{ steps.resolve.outputs.version }}"
+          if ! grep -Eq "^## \[$version\]" CHANGELOG.md; then
+            echo "CHANGELOG.md has no \"## [$version]\" section — move the [Unreleased] content into a dated entry."
+            exit 1
+          fi
+
+      - name: Compatibility matrix documents the pinned soroban-sdk version
+        run: |
+          sdk="$(sed -n 's/^soroban-sdk = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          grep -Fq "$sdk" COMPATIBILITY.md \
+            || { echo "COMPATIBILITY.md does not list the pinned soroban-sdk version ($sdk); update it before releasing."; exit 1; }
+
+  publish:
+    name: Publish to crates.io
+    needs: checklist
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Publish soroban-testkit (library, first)
+        run: cargo publish -p soroban-testkit
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+
+      - name: Publish soroban-testkit-cli (binary, second)
+        run: cargo publish -p soroban-testkit-cli
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+
+  github-release:
+    name: Create GitHub release
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          version="${{ needs.checklist.outputs.version }}"
+          awk -v ver="$version" '
+            $0 ~ ("^## \\[" ver "\\]") { on = 1; next }
+            on && $0 ~ /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > /tmp/release-notes.md
+          if [ ! -s /tmp/release-notes.md ]; then
+            echo "No changelog content found for v$version; refusing to create an empty release."
+            exit 1
+          fi
+
+      - name: Create the release
+        run: gh release create "v${{ needs.checklist.outputs.version }}" --title "v${{ needs.checklist.outputs.version }}" --notes-file /tmp/release-notes.md
+        env:
+          GH_TOKEN: ${{ github.token }}

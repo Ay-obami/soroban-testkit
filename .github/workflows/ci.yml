@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Every Monday at 06:00 UTC — see the scheduled-sdk-check job below.
+    - cron: '0 6 * * 1'
+  workflow_dispatch: {}
 
 env:
   CARGO_TERM_COLOR: always
@@ -54,3 +58,58 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-audit
       - run: cargo audit
+
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  coverage:
+    name: code coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - run: cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info
+      - uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  scheduled-sdk-check:
+    name: scheduled test against latest soroban-sdk
+    # Runs weekly against whatever soroban-sdk version crates.io currently
+    # considers latest, independent of the pinned version in Cargo.toml, so a
+    # breaking upstream release is caught before a contributor hits it in a
+    # PR. Also runnable on demand from the Actions tab.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - uses: Swatinem/rust-cache@v2
+      - name: Update soroban-sdk to the latest stable release
+        run: cargo update -p soroban-sdk
+      - run: cargo build --workspace
+      - run: cargo test --workspace
+      - name: Open an issue if the scheduled run fails
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Scheduled latest-SDK test failed (run ${context.runId})`,
+              body: `The weekly test against the latest stable soroban-sdk failed. See the run for details: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              labels: ['ci', 'upstream-sdk'],
+            });

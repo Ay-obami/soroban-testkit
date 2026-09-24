@@ -1321,8 +1321,12 @@ mod tests {
     #[test]
     #[allow(clippy::type_complexity)]
     fn property_calendar_helpers_match_advance_by_the_same_number_of_seconds() {
-        let helpers: [(&str, u64, fn(&TestEnv, u64)); 3] = [
-            ("advance_minutes", SECS_PER_MINUTE, TestEnv::advance_minutes),
+        let helpers = [
+            (
+                "advance_minutes",
+                SECS_PER_MINUTE,
+                TestEnv::advance_minutes as fn(&TestEnv, u64),
+            ),
             ("advance_hours", SECS_PER_HOUR, TestEnv::advance_hours),
             ("advance_days", SECS_PER_DAY, TestEnv::advance_days),
         ];
