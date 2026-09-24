@@ -1,13 +1,15 @@
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use soroban_sdk::testutils::Ledger as _;
 use soroban_sdk::xdr::{ContractId, Hash, ScAddress};
 use soroban_sdk::{Address, Env, TryFromVal};
 
-use crate::core::TestkitError;
+use super::error::TestkitError;
 
 // ──────────────────────────────────────────────────────────────────────────
 // Issue #35 — builder for deterministic ledger defaults
@@ -221,14 +223,32 @@ impl fmt::Display for EnvMetadata {
     }
 }
 
+#[derive(Default)]
+struct LabelStore {
+    address_to_label: Vec<(Address, String)>,
+    label_to_address: HashMap<String, Address>,
+}
+
 /// A wrapper around [`soroban_sdk::Env`] that carries testkit state
-/// (clock position, captured events, registered tokens) alongside the raw
-/// SDK environment.
+/// (clock position, captured events, registered tokens, address labels) alongside
+/// the raw SDK environment.
 ///
 /// Every other module in this crate extends `TestEnv` with additional
 /// methods (ledger control, event capture, token doubles, and so on) rather
 /// than introducing separate handle types, so a single `TestEnv` is enough
 /// to drive an entire test.
+///
+/// # Generated Address Labels
+///
+/// Generated addresses in `TestEnv` can optionally have human-readable labels:
+///
+/// - **When a label is provided** (via [`TestEnv::address_with_label`] or [`TestEnv::address_labeled`]):
+///   The generated address is associated with the given label string. The label can be inspected
+///   using [`TestEnv::label_of`], and the address can be looked up by label using [`TestEnv::address_for_label`].
+/// - **When no label is provided** (via [`TestEnv::address`]): Address generation behavior is
+///   unchanged; a fresh random address is generated without any associated label.
+/// - **Label exposure**: Labels are represented as string slices (`&str`) / owned strings (`String`)
+///   and exposed via [`TestEnv::label_of`] and [`TestEnv::address_for_label`].
 ///
 /// # Example
 ///
@@ -236,9 +256,11 @@ impl fmt::Display for EnvMetadata {
 /// use soroban_testkit::core::TestEnv;
 ///
 /// let env = TestEnv::new();
-/// let alice = env.address();
+/// let alice = env.address_with_label("alice");
 /// let bob = env.address();
 /// assert_ne!(alice, bob);
+/// assert_eq!(env.label_of(&alice), Some("alice".to_string()));
+/// assert_eq!(env.label_of(&bob), None);
 /// ```
 pub struct TestEnv {
     env: Env,
@@ -256,6 +278,7 @@ pub struct TestEnv {
     // testutils generator) means raw handles obtained through `env()` can
     // never shift the sequence `TestEnv::address()` issues from.
     address_counter: Cell<u64>,
+    labels: Mutex<LabelStore>,
 }
 
 impl TestEnv {
@@ -300,6 +323,7 @@ impl TestEnv {
             close_interval_secs: None,
             ledger_defaults: LedgerDefaults::default(),
             address_counter: Cell::new(0),
+            labels: Mutex::new(LabelStore::default()),
         }
     }
 
@@ -330,6 +354,7 @@ impl TestEnv {
             close_interval_secs: None,
             ledger_defaults: defaults,
             address_counter: Cell::new(0),
+            labels: Mutex::new(LabelStore::default()),
         }
     }
 
@@ -359,6 +384,7 @@ impl TestEnv {
             close_interval_secs: None,
             ledger_defaults: defaults,
             address_counter: Cell::new(0),
+            labels: Mutex::new(LabelStore::default()),
         }
     }
 
@@ -372,7 +398,7 @@ impl TestEnv {
     /// |---|---|
     /// | the RNG seed ([`TestEnv::with_seed`]) | the ledger clock position (`now`, `sequence`) |
     /// | the ledger close interval, if one was set ([`TestEnv::with_ledger_close_interval`]) | deployed contracts and their storage |
-    /// | | addresses, clients, and any other value created from this environment |
+    /// | | addresses, labels, clients, and any other value created from this environment |
     /// | | ledger settings changed directly through [`TestEnv::env`] |
     ///
     /// An environment that never set a close interval stays that way: the
@@ -414,6 +440,7 @@ impl TestEnv {
             close_interval_secs: self.close_interval_secs,
             ledger_defaults: self.ledger_defaults.clone(),
             address_counter: Cell::new(0),
+            labels: Mutex::new(LabelStore::default()),
         }
     }
 
@@ -459,6 +486,10 @@ impl TestEnv {
     pub fn reset(&mut self) {
         self.env = Self::fresh_env_with_defaults(&self.ledger_defaults);
         self.address_counter.set(0);
+        if let Ok(store) = self.labels.get_mut() {
+            store.address_to_label.clear();
+            store.label_to_address.clear();
+        }
     }
 
     /// Build the raw SDK environment every `TestEnv` starts from. Shared by
@@ -549,14 +580,20 @@ impl TestEnv {
     ///
     /// Addresses are issued from a counter the `TestEnv` owns, not from the
     /// SDK's shared testutils generator. The sequence therefore depends
-    /// only on how many addresses this environment has issued: two
-    /// environments built the same way issue identical sequences, and the
-    /// sequence is not shifted by activity on the raw [`Env`] reached
-    /// through [`TestEnv::env`] (raw `Address::generate` calls, contract
-    /// registration, and similar SDK-side draws use a separate generator).
+    /// only on this environment's seed and on how many addresses it has
+    /// issued: two environments built with the same seed issue identical
+    /// sequences, independently built environments' sequences are distinct
+    /// (their seeds differ), and the sequence is not shifted by activity on
+    /// the raw [`Env`] reached through [`TestEnv::env`] (raw
+    /// `Address::generate` calls, contract registration, and similar
+    /// SDK-side draws use a separate generator).
     /// The stream's values are disjoint from that generator's namespace, so
     /// generated addresses never collide with registered contract ids or
     /// raw generated addresses. [`TestEnv::reset`] starts the stream over.
+    ///
+    /// This variant carries no label ([`TestEnv::label_of`] returns
+    /// `None`); use [`TestEnv::address_with_label`] for a labeled address.
+    /// Labeled addresses draw from the same stream.
     ///
     /// # Example
     ///
@@ -567,6 +604,7 @@ impl TestEnv {
     /// let alice = env.address();
     /// let bob = env.address();
     /// assert_ne!(alice, bob);
+    /// assert_eq!(env.label_of(&alice), None);
     /// ```
     pub fn address(&self) -> Address {
         let next = match self.address_counter.get().checked_add(1) {
@@ -579,12 +617,15 @@ impl TestEnv {
             ),
         };
         self.address_counter.set(next);
-        // The counter occupies the *leading* bytes, disjoint from the SDK's
-        // own generator layout (trailing bytes). Both streams start at 1, so
-        // a shared layout would make `env.address() #1` equal the first
-        // registered contract's id — the two namespaces must never collide.
+        // Bytes 0..8 carry this environment's seed and bytes 8..16 the
+        // stream position: the layout stays disjoint from the SDK
+        // generator's namespace (trailing bytes, so `env.address() #1` can
+        // never equal the first registered contract's id), while the seed
+        // keeps independent environments' sequences distinct (issue #26)
+        // and same-seed environments reproducible.
         let mut bytes = [0u8; 32];
-        bytes[0..8].copy_from_slice(&next.to_be_bytes());
+        bytes[0..8].copy_from_slice(&self.seed.to_be_bytes());
+        bytes[8..16].copy_from_slice(&next.to_be_bytes());
         Address::try_from_val(&self.env, &ScAddress::Contract(ContractId(Hash(bytes))))
             .unwrap_or_else(|e| {
                 panic!(
@@ -592,6 +633,135 @@ impl TestEnv {
                     TestkitError::misuse(format!("failed to construct a generated address: {e:?}"))
                 )
             })
+    }
+
+    /// Generate a fresh random address associated with an optional human-readable label.
+    ///
+    /// # User-facing behavior
+    ///
+    /// - **When a label is provided**: Generates a fresh address, registers the label
+    ///   association in this environment, and returns the address. The label can
+    ///   subsequently be retrieved via [`TestEnv::label_of`], and the address can be
+    ///   looked up via [`TestEnv::address_for_label`].
+    /// - **When no label is provided** (via [`TestEnv::address`]): Existing address
+    ///   generation behavior is preserved; the address is generated without any label.
+    /// - **Label exposure**: Labels are represented as `&str` / `String` values and exposed
+    ///   via [`TestEnv::label_of`] and [`TestEnv::address_for_label`].
+    ///
+    /// # Error behavior
+    ///
+    /// Panics with a [`TestkitError::Misuse`] if:
+    /// - `label` is empty or consists entirely of whitespace.
+    /// - `label` is already associated with an address in this environment.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let alice = env.address_with_label("alice");
+    /// assert_eq!(env.label_of(&alice), Some("alice".to_string()));
+    /// assert_eq!(env.address_for_label("alice"), Some(alice));
+    /// ```
+    pub fn address_with_label(&self, label: &str) -> Address {
+        let trimmed = label.trim();
+        if trimmed.is_empty() {
+            panic!(
+                "{}",
+                TestkitError::Misuse(
+                    "address label cannot be empty or whitespace-only".to_string()
+                )
+            );
+        }
+
+        let mut store = self
+            .labels
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if store.label_to_address.contains_key(label) {
+            panic!(
+                "{}",
+                TestkitError::Misuse(format!("address label '{label}' is already in use"))
+            );
+        }
+
+        let addr = self.address();
+        store
+            .address_to_label
+            .push((addr.clone(), label.to_string()));
+        store
+            .label_to_address
+            .insert(label.to_string(), addr.clone());
+        addr
+    }
+
+    /// Alias for [`TestEnv::address_with_label`].
+    pub fn address_labeled(&self, label: &str) -> Address {
+        self.address_with_label(label)
+    }
+
+    /// Get the human-readable label associated with an address, if any.
+    ///
+    /// Returns `Some(label)` if the address was generated with a label (e.g., via
+    /// [`TestEnv::address_with_label`]), or `None` if the address has no label.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let alice = env.address_with_label("alice");
+    /// let bob = env.address();
+    ///
+    /// assert_eq!(env.label_of(&alice), Some("alice".to_string()));
+    /// assert_eq!(env.label_of(&bob), None);
+    /// ```
+    pub fn label_of(&self, address: &Address) -> Option<String> {
+        let store = self
+            .labels
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        store
+            .address_to_label
+            .iter()
+            .find(|(a, _)| a == address)
+            .map(|(_, l)| l.clone())
+    }
+
+    /// Alias for [`TestEnv::label_of`].
+    pub fn label(&self, address: &Address) -> Option<String> {
+        self.label_of(address)
+    }
+
+    /// Look up a generated address by its human-readable label, if any.
+    ///
+    /// Returns `Some(address)` if an address was generated with `label`, or `None`
+    /// if no address in this environment has that label.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// let alice = env.address_with_label("alice");
+    /// assert_eq!(env.address_for_label("alice"), Some(alice));
+    /// assert_eq!(env.address_for_label("unknown"), None);
+    /// ```
+    pub fn address_for_label(&self, label: &str) -> Option<Address> {
+        let store = self
+            .labels
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        store.label_to_address.get(label).cloned()
+    }
+
+    /// Alias for [`TestEnv::address_for_label`].
+    pub fn address_by_label(&self, label: &str) -> Option<Address> {
+        self.address_for_label(label)
     }
 
     /// Generate `n` fresh addresses.
@@ -837,10 +1007,24 @@ impl TestEnv {
             .collect())
     }
 
-    /// The seed this environment was constructed with, for use by other
-    /// modules' random value generators.
-    #[allow(dead_code)]
-    pub(crate) fn seed(&self) -> u64 {
+    /// The seed this environment was constructed with.
+    ///
+    /// This is the same seed passed to [`TestEnv::with_seed`], and can be used
+    /// to reconstruct an environment with identical deterministic behavior
+    /// (address generation, seeded property-test generators).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::with_seed(42);
+    /// let seed = env.seed();
+    /// let recreated = TestEnv::with_seed(seed);
+    /// assert_eq!(env.seed(), recreated.seed());
+    /// assert_eq!(env.address(), recreated.address());
+    /// ```
+    pub fn seed(&self) -> u64 {
         self.seed
     }
 
@@ -1163,12 +1347,110 @@ mod tests {
         );
     }
 
+    // Regression test for issue #26: independently created `TestEnv` instances
+    // must not share or leak any state — ledger clock, ledger sequence, or
+    // address-generation counter — between them.
+    #[test]
+    fn independently_created_instances_are_fully_isolated() {
+        let a = TestEnv::new();
+        let b = TestEnv::new();
+
+        // Capture b's baseline before touching a.
+        let b_sequence_before = b.env().ledger().get().sequence_number;
+        let b_timestamp_before = b.env().ledger().get().timestamp;
+
+        // Mutate a's ledger clock through the SDK directly.
+        a.env().ledger().set_sequence_number(77_777);
+        a.env().ledger().set_timestamp(999_999);
+
+        // b must observe none of a's mutations.
+        assert_eq!(
+            b.env().ledger().get().sequence_number,
+            b_sequence_before,
+            "mutating a's sequence must not affect b"
+        );
+        assert_eq!(
+            b.env().ledger().get().timestamp,
+            b_timestamp_before,
+            "mutating a's timestamp must not affect b"
+        );
+
+        // Addresses from each environment must be independent of each other.
+        let addr_from_a = a.address();
+        let addr_from_b = b.address();
+        assert_ne!(
+            addr_from_a, addr_from_b,
+            "addresses generated from independent environments must differ"
+        );
+    }
+
     #[test]
     fn with_seed_is_reproducible_across_runs() {
         let a = TestEnv::with_seed(42);
         let b = TestEnv::with_seed(42);
         assert_eq!(a.seed(), b.seed());
         assert_eq!(a.address(), b.address());
+    }
+
+    // --- seed accessor (#34) ---------------------------------------------
+
+    #[test]
+    fn seed_returns_the_seed_passed_to_with_seed() {
+        for seed in [0, 1, 42, u64::MAX] {
+            assert_eq!(TestEnv::with_seed(seed).seed(), seed);
+        }
+    }
+
+    #[test]
+    fn seed_is_carried_by_the_combined_defaults_constructor() {
+        let defaults = LedgerDefaults::new().sequence_number(500);
+        let env = TestEnv::with_ledger_defaults_and_seed(defaults, 7);
+        assert_eq!(env.seed(), 7);
+    }
+
+    // The exposed seed is the round-trip key: rebuilding an environment from
+    // the value `seed()` reports must reproduce the seeded generators.
+    #[test]
+    fn the_exposed_seed_rebuilds_an_identical_generator_stream() {
+        let env = TestEnv::with_seed(1234);
+        let recreated = TestEnv::with_seed(env.seed());
+
+        assert_eq!(
+            crate::money::amounts_in(&env, 0, 1_000_000, 16),
+            crate::money::amounts_in(&recreated, 0, 1_000_000, 16)
+        );
+    }
+
+    // Distinct seeds must drive distinct streams — otherwise `seed()` would
+    // report a value that does not actually control the generators.
+    #[test]
+    fn different_seeds_drive_different_generator_streams() {
+        let a = crate::money::amounts_in(&TestEnv::with_seed(1), 0, 1_000_000, 16);
+        let b = crate::money::amounts_in(&TestEnv::with_seed(2), 0, 1_000_000, 16);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn seed_zero_is_a_real_seed_not_an_unset_marker() {
+        let env = TestEnv::with_seed(0);
+        assert_eq!(env.seed(), 0);
+        assert_eq!(
+            crate::money::amounts_in(&env, 0, 100, 8),
+            crate::money::amounts_in(&TestEnv::with_seed(0), 0, 100, 8)
+        );
+    }
+
+    // The seed is construction-time configuration: drawing addresses and
+    // moving the clock must not change it.
+    #[test]
+    fn the_seed_does_not_change_while_the_environment_is_used() {
+        let env = TestEnv::with_seed(42);
+        let before = env.seed();
+
+        env.addresses(4);
+        env.advance_ledgers(10);
+
+        assert_eq!(env.seed(), before);
     }
 
     #[test]
@@ -1932,8 +2214,25 @@ mod tests {
     }
 
     #[test]
-    fn default_issues_the_same_address_sequence_as_new() {
-        assert_eq!(TestEnv::default().addresses(3), TestEnv::new().addresses(3));
+    fn default_issues_distinct_addresses_like_new() {
+        // Address streams are seed-derived, and default/new each draw a
+        // fresh random seed, so the sequences are compared behaviorally
+        // rather than byte-for-byte: both must yield `n` distinct
+        // addresses, exactly as a same-seed rebuild would.
+        for env in [TestEnv::default(), TestEnv::new()] {
+            let addrs = env.addresses(3);
+            assert_eq!(addrs.len(), 3);
+            for i in 0..addrs.len() {
+                for j in (i + 1)..addrs.len() {
+                    assert_ne!(addrs[i], addrs[j]);
+                }
+            }
+        }
+        // Same-seed environments still reproduce each other's sequences.
+        assert_eq!(
+            TestEnv::with_seed(42).addresses(3),
+            TestEnv::with_seed(42).addresses(3)
+        );
     }
 
     #[test]

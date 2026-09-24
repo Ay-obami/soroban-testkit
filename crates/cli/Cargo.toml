@@ -11,7 +11,8 @@ name = "soroban-testkit"
 path = "src/main.rs"
 
 [dependencies]
-clap.workspace = true
+clap = { workspace = true, features = ["derive"] }
+clap_complete = "4"
 soroban-sdk = { workspace = true, features = ["testutils"] }
 soroban-spec = "27.0.6"
 syn = { version = "3.0.5", features = ["full", "visit"] }
