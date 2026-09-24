@@ -27,6 +27,21 @@ framework, anything requiring network access at test time.
   `Cargo.toml`), so a breaking upstream release is caught before it shows up
   in a contributor's PR. It opens an issue automatically if it fails; it
   never blocks a PR.
+- Every PR that changes user-facing behavior adds an entry to
+  `CHANGELOG.md` under `## [Unreleased]` (see ["How to add an
+  entry"](CHANGELOG.md#how-to-add-an-entry)). A PR that removes or renames a
+  public item must also follow the versioning policy — see
+  [Versioning and releases](#versioning-and-releases).
+
+## Versioning and releases
+
+Both workspace crates are version-locked at `0.x` and follow
+[`API_STABILITY.md`](API_STABILITY.md): a minor bump may break the API, a
+patch bump may not. The supported `soroban-sdk` / Stellar protocol versions
+per release are in [`COMPATIBILITY.md`](COMPATIBILITY.md), and the
+release checklist for both crates is in
+[`RELEASING.md`](RELEASING.md). The `docs` and `release` workflows in
+`.github/workflows/` enforce these on every PR and on every `v*` tag.
 
 ## Supply-chain policy
 

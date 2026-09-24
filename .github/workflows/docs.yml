@@ -1,0 +1,51 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    name: changelog + process docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Required process docs exist
+        run: |
+          for f in CHANGELOG.md API_STABILITY.md COMPATIBILITY.md RELEASING.md; do
+            test -f "$f" || { echo "missing required process doc: $f"; exit 1; }
+          done
+
+      - name: CHANGELOG has an entry for the current version or Unreleased
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if ! grep -Eq "^## \[$version\]" CHANGELOG.md; then
+            if ! grep -Eq "^## \[Unreleased\]" CHANGELOG.md; then
+              echo "CHANGELOG.md needs a \"## [$version]\" or \"## [Unreleased]\" heading (workspace version is $version)."
+              exit 1
+            fi
+          fi
+
+      - name: Compatibility matrix documents the pinned soroban-sdk version
+        run: |
+          sdk="$(sed -n 's/^soroban-sdk = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          grep -Fq "soroban-sdk" COMPATIBILITY.md \
+            || { echo "COMPATIBILITY.md does not mention soroban-sdk."; exit 1; }
+          grep -Fq "$sdk" COMPATIBILITY.md \
+            || { echo "COMPATIBILITY.md does not list the pinned soroban-sdk version ($sdk); update it in the same commit as the pin."; exit 1; }
+
+      - name: README links the process docs
+        run: |
+          for f in CHANGELOG.md API_STABILITY.md COMPATIBILITY.md RELEASING.md; do
+            grep -Fq "$f" README.md \
+              || { echo "README.md should link $f so users can find it."; exit 1; }
+          done
+
+      - name: CONTRIBUTING documents the versioning policy
+        run: |
+          grep -Fq "API_STABILITY.md" CONTRIBUTING.md \
+            || { echo "CONTRIBUTING.md should reference API_STABILITY.md."; exit 1; }
+          grep -Fq "CHANGELOG.md" CONTRIBUTING.md \
+            || { echo "CONTRIBUTING.md should reference CHANGELOG.md."; exit 1; }
