@@ -12,3 +12,4 @@ repository = "https://github.com/soroban-testkit/soroban-testkit"
 soroban-sdk = "27.0.6"
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
+trybuild = "1"

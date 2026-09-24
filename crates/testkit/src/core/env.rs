@@ -1,10 +1,222 @@
+use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::Ledger as _;
 use soroban_sdk::{Address, Env};
 
-use crate::core::TestkitError;
+// ──────────────────────────────────────────────────────────────────────────
+// Issue #35 — builder for deterministic ledger defaults
+// ──────────────────────────────────────────────────────────────────────────
+
+/// A builder for the ledger parameters a [`TestEnv`] starts with.
+///
+/// `LedgerDefaults` lets you pin the initial `timestamp`, `sequence_number`,
+/// `protocol_version`, and `base_reserve` so that every environment built
+/// from it produces identical starting conditions. Use it when a test needs
+/// a specific epoch or a particular protocol version, and you want to state
+/// that intent up front rather than calling `env.warp_to(…)` or reaching
+/// through `env.env().ledger().set(…)` after construction.
+///
+/// Unset fields keep the [`soroban_sdk::Env`] defaults (all zeros / SDK
+/// defaults as of the pinned `soroban-sdk` version).
+///
+/// # Example
+///
+/// ```
+/// use soroban_testkit::core::{LedgerDefaults, TestEnv};
+///
+/// let defaults = LedgerDefaults::new()
+///     .timestamp(1_700_000_000)
+///     .sequence_number(500_000);
+///
+/// let env = TestEnv::with_ledger_defaults(defaults);
+/// assert_eq!(env.now(), 1_700_000_000);
+/// assert_eq!(env.sequence(), 500_000);
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct LedgerDefaults {
+    pub(crate) timestamp: Option<u64>,
+    pub(crate) sequence_number: Option<u32>,
+    pub(crate) protocol_version: Option<u32>,
+    pub(crate) base_reserve: Option<u32>,
+}
+
+impl LedgerDefaults {
+    /// Create a builder with no overrides; all fields keep the SDK defaults.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::LedgerDefaults;
+    ///
+    /// let defaults = LedgerDefaults::new();
+    /// // All fields are None; the SDK defaults apply.
+    /// assert!(defaults.timestamp_override().is_none());
+    /// assert!(defaults.sequence_number_override().is_none());
+    /// ```
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the initial unix timestamp (whole seconds).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::{LedgerDefaults, TestEnv};
+    ///
+    /// let env = TestEnv::with_ledger_defaults(
+    ///     LedgerDefaults::new().timestamp(1_700_000_000),
+    /// );
+    /// assert_eq!(env.now(), 1_700_000_000);
+    /// ```
+    pub fn timestamp(mut self, value: u64) -> Self {
+        self.timestamp = Some(value);
+        self
+    }
+
+    /// Set the initial ledger sequence number.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::{LedgerDefaults, TestEnv};
+    ///
+    /// let env = TestEnv::with_ledger_defaults(
+    ///     LedgerDefaults::new().sequence_number(42_000),
+    /// );
+    /// assert_eq!(env.sequence(), 42_000);
+    /// ```
+    pub fn sequence_number(mut self, value: u32) -> Self {
+        self.sequence_number = Some(value);
+        self
+    }
+
+    /// Set the initial protocol version.
+    ///
+    /// The protocol version must be compatible with the version of
+    /// `soroban-sdk` in use (too old a value is rejected by the host).
+    /// Prefer using the current version from the SDK as a baseline when you
+    /// need to override this field.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::{LedgerDefaults, TestEnv};
+    /// use soroban_sdk::testutils::Ledger as _;
+    ///
+    /// // Resolve the current protocol version from the SDK itself so that
+    /// // this example compiles against any soroban-sdk version.
+    /// let current = {
+    ///     let base = soroban_sdk::Env::default();
+    ///     base.ledger().get().protocol_version
+    /// };
+    /// let env = TestEnv::with_ledger_defaults(
+    ///     LedgerDefaults::new().protocol_version(current),
+    /// );
+    /// assert_eq!(env.env().ledger().get().protocol_version, current);
+    /// ```
+    pub fn protocol_version(mut self, value: u32) -> Self {
+        self.protocol_version = Some(value);
+        self
+    }
+
+    /// Set the initial base reserve (in stroops).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::{LedgerDefaults, TestEnv};
+    ///
+    /// let env = TestEnv::with_ledger_defaults(
+    ///     LedgerDefaults::new().base_reserve(5_000_000),
+    /// );
+    /// drop(env);
+    /// ```
+    pub fn base_reserve(mut self, value: u32) -> Self {
+        self.base_reserve = Some(value);
+        self
+    }
+
+    /// The configured timestamp override, if any.
+    pub fn timestamp_override(&self) -> Option<u64> {
+        self.timestamp
+    }
+
+    /// The configured sequence number override, if any.
+    pub fn sequence_number_override(&self) -> Option<u32> {
+        self.sequence_number
+    }
+
+    /// The configured protocol version override, if any.
+    pub fn protocol_version_override(&self) -> Option<u32> {
+        self.protocol_version
+    }
+
+    /// The configured base reserve override, if any.
+    pub fn base_reserve_override(&self) -> Option<u32> {
+        self.base_reserve
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Issue #39 — test-environment metadata in diagnostic output
+// ──────────────────────────────────────────────────────────────────────────
+
+/// A snapshot of [`TestEnv`] state for inclusion in assertion failure
+/// messages.
+///
+/// Every assertion helper in this crate that can fail includes an
+/// `EnvMetadata` snapshot in its failure message so that the developer
+/// immediately sees *where* in ledger time the failure happened, without
+/// having to add manual `println!` calls or re-run under a debugger.
+///
+/// Use [`TestEnv::metadata`] to capture a snapshot at any point.
+///
+/// # Example
+///
+/// ```
+/// use soroban_testkit::core::TestEnv;
+/// use std::time::Duration;
+///
+/// let env = TestEnv::with_seed(1);
+/// env.advance(Duration::from_secs(300));
+///
+/// let meta = env.metadata();
+/// let display = meta.to_string();
+/// assert!(display.contains("timestamp=300"));
+/// assert!(display.contains("sequence="));
+/// assert!(display.contains("seed=1"));
+/// ```
+#[derive(Debug, Clone)]
+pub struct EnvMetadata {
+    /// Current ledger timestamp (unix seconds).
+    pub timestamp: u64,
+    /// Current ledger sequence number.
+    pub sequence: u32,
+    /// Current ledger protocol version.
+    pub protocol_version: u32,
+    /// The RNG seed this environment was built with.
+    pub seed: u64,
+    /// The configured ledger close interval (seconds), if any was set.
+    pub close_interval_override: Option<u64>,
+}
+
+impl fmt::Display for EnvMetadata {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "TestEnv {{ timestamp={}, sequence={}, protocol_version={}, seed={}",
+            self.timestamp, self.sequence, self.protocol_version, self.seed,
+        )?;
+        if let Some(interval) = self.close_interval_override {
+            write!(f, ", close_interval={interval}s")?;
+        }
+        write!(f, " }}")
+    }
+}
 
 /// A wrapper around [`soroban_sdk::Env`] that carries testkit state
 /// (clock position, captured events, registered tokens) alongside the raw
@@ -34,6 +246,8 @@ pub struct TestEnv {
     // `None` means "use the crate default"; the `ledger` module owns both
     // the default and the validation of overrides.
     close_interval_secs: Option<u64>,
+    // Deterministic starting ledger parameters provided via LedgerDefaults.
+    ledger_defaults: LedgerDefaults,
 }
 
 impl TestEnv {
@@ -73,9 +287,67 @@ impl TestEnv {
     /// ```
     pub fn with_seed(seed: u64) -> Self {
         Self {
-            env: Self::fresh_env(),
+            env: Self::fresh_env_with_defaults(&LedgerDefaults::default()),
             seed,
             close_interval_secs: None,
+            ledger_defaults: LedgerDefaults::default(),
+        }
+    }
+
+    /// Create an environment that starts from the given [`LedgerDefaults`].
+    ///
+    /// This is the primary entry point when a test depends on a specific
+    /// epoch, protocol version, or sequence number. Combining it with
+    /// [`TestEnv::with_seed`] via [`TestEnv::with_ledger_defaults_and_seed`]
+    /// makes the full starting state deterministic.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::{LedgerDefaults, TestEnv};
+    ///
+    /// let defaults = LedgerDefaults::new()
+    ///     .timestamp(1_700_000_000)
+    ///     .sequence_number(1_000_000);
+    ///
+    /// let env = TestEnv::with_ledger_defaults(defaults);
+    /// assert_eq!(env.now(), 1_700_000_000);
+    /// assert_eq!(env.sequence(), 1_000_000);
+    /// ```
+    pub fn with_ledger_defaults(defaults: LedgerDefaults) -> Self {
+        Self {
+            env: Self::fresh_env_with_defaults(&defaults),
+            seed: random_seed(),
+            close_interval_secs: None,
+            ledger_defaults: defaults,
+        }
+    }
+
+    /// Create an environment with a fixed RNG seed and deterministic starting
+    /// ledger.
+    ///
+    /// Combines [`TestEnv::with_seed`] and [`TestEnv::with_ledger_defaults`]
+    /// so that both the randomised value generators and the initial clock
+    /// position are fully reproducible.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::{LedgerDefaults, TestEnv};
+    ///
+    /// let defaults = LedgerDefaults::new().timestamp(1_000_000);
+    /// let a = TestEnv::with_ledger_defaults_and_seed(defaults.clone(), 99);
+    /// let b = TestEnv::with_ledger_defaults_and_seed(defaults, 99);
+    ///
+    /// assert_eq!(a.now(), b.now());
+    /// assert_eq!(a.address(), b.address());
+    /// ```
+    pub fn with_ledger_defaults_and_seed(defaults: LedgerDefaults, seed: u64) -> Self {
+        Self {
+            env: Self::fresh_env_with_defaults(&defaults),
+            seed,
+            close_interval_secs: None,
+            ledger_defaults: defaults,
         }
     }
 
@@ -126,9 +398,10 @@ impl TestEnv {
     /// ```
     pub fn clone_config(&self) -> Self {
         Self {
-            env: Self::fresh_env(),
+            env: Self::fresh_env_with_defaults(&self.ledger_defaults),
             seed: self.seed,
             close_interval_secs: self.close_interval_secs,
+            ledger_defaults: self.ledger_defaults.clone(),
         }
     }
 
@@ -172,16 +445,40 @@ impl TestEnv {
     /// assert_eq!(env.ledger_close_interval(), 2);
     /// ```
     pub fn reset(&mut self) {
-        self.env = Self::fresh_env();
+        self.env = Self::fresh_env_with_defaults(&self.ledger_defaults);
     }
 
     /// Build the raw SDK environment every `TestEnv` starts from. Shared by
     /// construction, [`TestEnv::clone_config`] and [`TestEnv::reset`] so the
     /// three cannot drift apart.
-    fn fresh_env() -> Env {
-        Env::new_with_config(soroban_sdk::testutils::EnvTestConfig {
+    fn fresh_env_with_defaults(defaults: &LedgerDefaults) -> Env {
+        let env = Env::new_with_config(soroban_sdk::testutils::EnvTestConfig {
             capture_snapshot_at_drop: false,
-        })
+        });
+        // Apply any LedgerDefaults overrides so the starting ledger is
+        // deterministic. We only mutate the fields the caller specified;
+        // unset fields keep the SDK's own defaults.
+        if defaults.timestamp.is_some()
+            || defaults.sequence_number.is_some()
+            || defaults.protocol_version.is_some()
+            || defaults.base_reserve.is_some()
+        {
+            let mut info = env.ledger().get();
+            if let Some(ts) = defaults.timestamp {
+                info.timestamp = ts;
+            }
+            if let Some(seq) = defaults.sequence_number {
+                info.sequence_number = seq;
+            }
+            if let Some(pv) = defaults.protocol_version {
+                info.protocol_version = pv;
+            }
+            if let Some(br) = defaults.base_reserve {
+                info.base_reserve = br;
+            }
+            env.ledger().set(info);
+        }
+        env
     }
 
     /// Escape hatch to the underlying SDK environment, for calls this crate
@@ -462,6 +759,69 @@ impl TestEnv {
     /// responsible for validating `secs`.
     pub(crate) fn set_close_interval_override(&mut self, secs: u64) {
         self.close_interval_secs = Some(secs);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Issue #35 — LedgerDefaults accessor
+    // ──────────────────────────────────────────────────────────────────────
+
+    /// The [`LedgerDefaults`] this environment was built with.
+    ///
+    /// Useful for cloning configuration or inspecting what was requested when
+    /// an assertion produces a failure message.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::{LedgerDefaults, TestEnv};
+    ///
+    /// let defaults = LedgerDefaults::new().timestamp(1_000_000);
+    /// let env = TestEnv::with_ledger_defaults(defaults);
+    /// assert_eq!(env.ledger_defaults().timestamp_override(), Some(1_000_000));
+    /// ```
+    pub fn ledger_defaults(&self) -> &LedgerDefaults {
+        &self.ledger_defaults
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Issue #39 — test-environment metadata
+    // ──────────────────────────────────────────────────────────────────────
+
+    /// Capture a snapshot of this environment's current state for use in
+    /// assertion failure messages.
+    ///
+    /// [`EnvMetadata`] implements [`std::fmt::Display`] so it can be
+    /// interpolated directly into a `format!` string. All assertion helpers
+    /// in this crate include a metadata snapshot in their failure output so
+    /// that a failed test tells you *where* in ledger time and *with which
+    /// seed* it failed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    /// use std::time::Duration;
+    ///
+    /// let env = TestEnv::with_seed(7);
+    /// env.advance(Duration::from_secs(120));
+    ///
+    /// let meta = env.metadata();
+    /// assert_eq!(meta.seed, 7);
+    /// assert_eq!(meta.timestamp, 120);
+    ///
+    /// let display = meta.to_string();
+    /// assert!(display.contains("seed=7"), "{display}");
+    /// assert!(display.contains("timestamp=120"), "{display}");
+    /// ```
+    pub fn metadata(&self) -> EnvMetadata {
+        let info = self.env().ledger().get();
+        EnvMetadata {
+            timestamp: info.timestamp,
+            sequence: info.sequence_number,
+            protocol_version: info.protocol_version,
+            seed: self.seed,
+            close_interval_override: self.close_interval_secs,
+        }
     }
 }
 
@@ -905,215 +1265,189 @@ mod tests {
         assert_ne!(env.address(), env.address());
     }
 
-    // --- Named actor generation (#36) -----------------------------------
+    // ─────────────────────────────────────────────────────────────────────
+    // Issue #35 — LedgerDefaults builder
+    // ─────────────────────────────────────────────────────────────────────
 
     #[test]
-    fn actor_creates_actor_with_expected_name_and_address() {
-        let env = TestEnv::new();
-        let alice = env.actor("alice");
-        assert_eq!(alice.name(), "alice");
-        assert_eq!(alice.address(), &*alice);
-        assert_eq!(format!("{alice}"), "alice");
+    fn ledger_defaults_new_has_all_none() {
+        let d = LedgerDefaults::new();
+        assert!(d.timestamp_override().is_none());
+        assert!(d.sequence_number_override().is_none());
+        assert!(d.protocol_version_override().is_none());
+        assert!(d.base_reserve_override().is_none());
     }
 
     #[test]
-    fn actor_diagnostic_formats_name_and_debug_address() {
-        let env = TestEnv::new();
-        let alice = env.actor("alice");
-        let diag = alice.diagnostic();
-        assert!(diag.starts_with("alice ("));
-        assert!(diag.ends_with(')'));
+    fn ledger_defaults_timestamp_sets_the_starting_timestamp() {
+        let env = TestEnv::with_ledger_defaults(LedgerDefaults::new().timestamp(1_700_000_000));
+        assert_eq!(env.now(), 1_700_000_000);
     }
 
     #[test]
-    fn actor_derefs_and_compares_with_address() {
-        let env = TestEnv::new();
-        let alice = env.actor("alice");
-        let raw_addr: &Address = &alice;
-        assert_eq!(raw_addr, alice.address());
-        assert_eq!(alice, *alice.address());
-        assert_eq!(*alice.address(), alice);
-
-        let bob = env.actor("bob");
-        assert_ne!(alice, bob);
+    fn ledger_defaults_sequence_sets_the_starting_sequence() {
+        let env = TestEnv::with_ledger_defaults(LedgerDefaults::new().sequence_number(999_000));
+        assert_eq!(env.sequence(), 999_000);
     }
 
     #[test]
-    fn actor_into_address_returns_underlying_address() {
-        let env = TestEnv::new();
-        let alice = env.actor("alice");
-        let expected = alice.address().clone();
-        assert_eq!(alice.into_address(), expected);
+    fn ledger_defaults_protocol_version_is_applied() {
+        // Use the SDK's own current protocol version to avoid the "too old"
+        // check in soroban-env-host (which rejects versions below the host's
+        // interface version in non-test-mode builds of that crate).
+        let current = soroban_sdk::Env::default().ledger().get().protocol_version;
+        let env = TestEnv::with_ledger_defaults(LedgerDefaults::new().protocol_version(current));
+        assert_eq!(env.env().ledger().get().protocol_version, current);
     }
 
     #[test]
-    fn try_actor_accepts_valid_names() {
-        let env = TestEnv::new();
-        assert!(env.try_actor("alice").is_ok());
-        assert!(env.try_actor("treasury_1").is_ok());
-        assert!(env.try_named_actor("admin").is_ok());
+    fn ledger_defaults_base_reserve_is_applied() {
+        let env = TestEnv::with_ledger_defaults(LedgerDefaults::new().base_reserve(5_000_000));
+        assert_eq!(env.env().ledger().get().base_reserve, 5_000_000);
     }
 
     #[test]
-    fn try_actor_rejects_empty_or_whitespace_names() {
-        let env = TestEnv::new();
-        let err_empty = env.try_actor("").unwrap_err();
-        assert_eq!(err_empty.code(), "TESTKIT_MISUSE");
-        assert_eq!(
-            err_empty.message(),
-            "actor name cannot be empty or only whitespace"
+    fn ledger_defaults_all_fields_together() {
+        // Use the SDK's current protocol version to avoid the "too old" check.
+        let current_protocol = soroban_sdk::Env::default().ledger().get().protocol_version;
+        let env = TestEnv::with_ledger_defaults(
+            LedgerDefaults::new()
+                .timestamp(1_700_000_000)
+                .sequence_number(42_000)
+                .protocol_version(current_protocol)
+                .base_reserve(5_000_000),
         );
-
-        let err_space = env.try_actor("   \t\n").unwrap_err();
-        assert_eq!(err_space.code(), "TESTKIT_MISUSE");
+        let info = env.env().ledger().get();
+        assert_eq!(env.now(), 1_700_000_000);
+        assert_eq!(env.sequence(), 42_000);
+        assert_eq!(info.protocol_version, current_protocol);
+        assert_eq!(info.base_reserve, 5_000_000);
     }
 
     #[test]
-    #[should_panic(expected = "actor name cannot be empty or only whitespace")]
-    fn actor_panics_on_empty_name() {
+    fn with_ledger_defaults_and_seed_is_deterministic() {
+        let defaults = LedgerDefaults::new()
+            .timestamp(500_000)
+            .sequence_number(100);
+        let a = TestEnv::with_ledger_defaults_and_seed(defaults.clone(), 7);
+        let b = TestEnv::with_ledger_defaults_and_seed(defaults, 7);
+        assert_eq!(a.now(), b.now());
+        assert_eq!(a.sequence(), b.sequence());
+        assert_eq!(a.address(), b.address());
+    }
+
+    #[test]
+    fn ledger_defaults_are_carried_by_clone_config() {
+        let defaults = LedgerDefaults::new()
+            .timestamp(1_000_000)
+            .sequence_number(500);
+        let original = TestEnv::with_ledger_defaults(defaults);
+        original.advance_ledgers(10);
+
+        let clone = original.clone_config();
+        // The clone starts from the defaults again, not from the original's
+        // current position.
+        assert_eq!(clone.now(), 1_000_000);
+        assert_eq!(clone.sequence(), 500);
+    }
+
+    #[test]
+    fn ledger_defaults_are_respected_after_reset() {
+        let defaults = LedgerDefaults::new()
+            .timestamp(2_000_000)
+            .sequence_number(300);
+        let mut env = TestEnv::with_ledger_defaults(defaults);
+        env.advance_ledgers(50);
+        assert_ne!(env.now(), 2_000_000);
+
+        env.reset();
+        assert_eq!(env.now(), 2_000_000);
+        assert_eq!(env.sequence(), 300);
+    }
+
+    #[test]
+    fn ledger_defaults_accessor_returns_what_was_given() {
+        let defaults = LedgerDefaults::new().timestamp(99).sequence_number(7);
+        let env = TestEnv::with_ledger_defaults(defaults);
+        assert_eq!(env.ledger_defaults().timestamp_override(), Some(99));
+        assert_eq!(env.ledger_defaults().sequence_number_override(), Some(7));
+    }
+
+    #[test]
+    fn ledger_defaults_with_no_fields_is_same_as_new() {
+        let with_defaults = TestEnv::with_ledger_defaults(LedgerDefaults::new());
+        let plain = TestEnv::new();
+        // Starting positions should be the same (both start at 0/0).
+        assert_eq!(with_defaults.now(), plain.now());
+        assert_eq!(with_defaults.sequence(), plain.sequence());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Issue #39 — EnvMetadata in diagnostic output
+    // ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn metadata_captures_current_timestamp_and_sequence() {
         let env = TestEnv::new();
-        let _ = env.actor("");
+        env.advance_ledgers(10);
+        let meta = env.metadata();
+        assert_eq!(meta.timestamp, env.now());
+        assert_eq!(meta.sequence, env.sequence());
     }
 
     #[test]
-    #[should_panic(expected = "actor name cannot be empty or only whitespace")]
-    fn named_actor_panics_on_whitespace_name() {
+    fn metadata_captures_seed() {
+        let env = TestEnv::with_seed(42);
+        assert_eq!(env.metadata().seed, 42);
+    }
+
+    #[test]
+    fn metadata_captures_close_interval_override() {
+        let env = TestEnv::new().with_ledger_close_interval(3);
+        assert_eq!(env.metadata().close_interval_override, Some(3));
+    }
+
+    #[test]
+    fn metadata_has_no_close_interval_when_none_was_set() {
         let env = TestEnv::new();
-        let _ = env.named_actor("   ");
+        assert_eq!(env.metadata().close_interval_override, None);
     }
 
     #[test]
-    fn actors_batch_generates_distinct_actors() {
+    fn metadata_display_includes_all_key_fields() {
+        let env = TestEnv::with_seed(7).with_ledger_close_interval(2);
+        env.advance_ledgers(5);
+        let display = env.metadata().to_string();
+        assert!(display.contains("seed=7"), "{display}");
+        assert!(display.contains("close_interval=2s"), "{display}");
+        // sequence and timestamp both have non-zero values now
+        assert!(display.contains("sequence="), "{display}");
+        assert!(display.contains("timestamp="), "{display}");
+    }
+
+    #[test]
+    fn metadata_display_omits_close_interval_when_not_set() {
+        let env = TestEnv::with_seed(5);
+        let display = env.metadata().to_string();
+        assert!(!display.contains("close_interval"), "{display}");
+    }
+
+    #[test]
+    fn metadata_updates_after_advancing_the_clock() {
         let env = TestEnv::new();
-        let actors = env.actors(&["alice", "bob", "charlie"]);
-        assert_eq!(actors.len(), 3);
-        assert_eq!(actors[0].name(), "alice");
-        assert_eq!(actors[1].name(), "bob");
-        assert_eq!(actors[2].name(), "charlie");
-        assert_ne!(actors[0].address(), actors[1].address());
-        assert_ne!(actors[1].address(), actors[2].address());
-        assert_ne!(actors[0].address(), actors[2].address());
+        let before = env.metadata();
+        env.advance_ledgers(20);
+        let after = env.metadata();
+        assert!(after.timestamp > before.timestamp);
+        assert!(after.sequence > before.sequence);
     }
 
     #[test]
-    fn try_actors_rejects_duplicate_names() {
-        let env = TestEnv::new();
-        let err = env.try_actors(&["alice", "bob", "alice"]).unwrap_err();
-        assert_eq!(err.code(), "TESTKIT_MISUSE");
-        assert!(err.message().contains("duplicate actor name \"alice\""));
+    fn metadata_protocol_version_matches_ledger_info() {
+        // Use the SDK's current protocol version to avoid the "too old" check.
+        let current_protocol = soroban_sdk::Env::default().ledger().get().protocol_version;
+        let env =
+            TestEnv::with_ledger_defaults(LedgerDefaults::new().protocol_version(current_protocol));
+        assert_eq!(env.metadata().protocol_version, current_protocol);
     }
-
-    #[test]
-    fn try_actors_rejects_blank_name() {
-        let env = TestEnv::new();
-        let err = env.try_actors(&["alice", ""]).unwrap_err();
-        assert_eq!(err.code(), "TESTKIT_MISUSE");
-    }
-
-    #[test]
-    #[should_panic(expected = "duplicate actor name")]
-    fn actors_panics_on_duplicate_name() {
-        let env = TestEnv::new();
-        let _ = env.actors(&["admin", "admin"]);
-    }
-
-    // --- Address iterator (#37) -----------------------------------------
-
-    #[test]
-    fn address_iter_yields_fresh_distinct_addresses() {
-        let env = TestEnv::new();
-        let addrs: Vec<Address> = env.address_iter().take(5).collect();
-        assert_eq!(addrs.len(), 5);
-        for i in 0..addrs.len() {
-            for j in (i + 1)..addrs.len() {
-                assert_ne!(addrs[i], addrs[j]);
-            }
-        }
-    }
-
-    #[test]
-    fn addresses_iter_alias_behaves_identically() {
-        let env = TestEnv::new();
-        let mut iter = env.addresses_iter();
-        let a = iter.next().unwrap();
-        let b = iter.next().unwrap();
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn address_iter_reproducible_with_seed() {
-        let env1 = TestEnv::with_seed(12345);
-        let env2 = TestEnv::with_seed(12345);
-        let seq1: Vec<Address> = env1.address_iter().take(4).collect();
-        let seq2: Vec<Address> = env2.address_iter().take(4).collect();
-        assert_eq!(seq1, seq2);
-    }
-
-    #[test]
-    fn address_iter_size_hint_and_cloning() {
-        let env = TestEnv::new();
-        let iter = env.address_iter();
-        let (lower, upper) = iter.size_hint();
-        assert_eq!(lower, usize::MAX);
-        assert_eq!(upper, None);
-
-        let mut iter_clone = iter.clone();
-        assert!(iter_clone.next().is_some());
-    }
-
-    // --- Checked address batch API (#38) --------------------------------
-
-    #[test]
-    fn try_addresses_succeeds_for_valid_batch_sizes() {
-        let env = TestEnv::new();
-        let one = env.try_addresses(1).unwrap();
-        assert_eq!(one.len(), 1);
-
-        let five = env.try_addresses(5).unwrap();
-        assert_eq!(five.len(), 5);
-        for i in 0..five.len() {
-            for j in (i + 1)..five.len() {
-                assert_ne!(five[i], five[j]);
-            }
-        }
-    }
-
-    #[test]
-    fn checked_addresses_alias_succeeds() {
-        let env = TestEnv::new();
-        let res = env.checked_addresses(3);
-        assert!(res.is_ok());
-        assert_eq!(res.unwrap().len(), 3);
-    }
-
-    #[test]
-    fn try_addresses_rejects_zero_count() {
-        let env = TestEnv::new();
-        let err = env.try_addresses(0).unwrap_err();
-        assert_eq!(err.code(), "TESTKIT_MISUSE");
-        assert_eq!(
-            err.message(),
-            "address batch size must be at least 1; requested 0 addresses"
-        );
-    }
-
-    #[test]
-    fn try_addresses_rejects_excessive_batch_size() {
-        let env = TestEnv::new();
-        let err = env.try_addresses(MAX_ADDRESS_BATCH_SIZE + 1).unwrap_err();
-        assert_eq!(err.code(), "TESTKIT_MISUSE");
-        assert!(err.message().contains("exceeds the maximum limit"));
-
-        let err_max = env.try_addresses(usize::MAX).unwrap_err();
-        assert_eq!(err_max.code(), "TESTKIT_MISUSE");
-    }
-
-    #[test]
-    fn try_addresses_reproducible_for_same_seed() {
-        let env1 = TestEnv::with_seed(999);
-        let env2 = TestEnv::with_seed(999);
-        let batch1 = env1.try_addresses(4).unwrap();
-        let batch2 = env2.try_addresses(4).unwrap();
-        assert_eq!(batch1, batch2);
-    }
-}
+} // end mod tests

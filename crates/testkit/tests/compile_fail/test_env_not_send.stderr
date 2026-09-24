@@ -1,0 +1,124 @@
+error[E0277]: `Rc<soroban_env_host::host::HostImpl>` cannot be sent between threads safely
+  --> tests/compile_fail/test_env_not_send.rs:13:18
+   |
+13 |     require_send(env); // ERROR: `TestEnv` is not `Send`
+   |     ------------ ^^^ `Rc<soroban_env_host::host::HostImpl>` cannot be sent between threads safely
+   |     |
+   |     required by a bound introduced by this call
+   |
+   = help: within `TestEnv`, the trait `Send` is not implemented for `Rc<soroban_env_host::host::HostImpl>`
+note: required because it appears within the type `soroban_env_host::host::Host`
+  --> $CARGO/soroban-env-host-$VERSION/src/host.rs
+   |
+   | pub struct Host(Rc<HostImpl>);
+   |            ^^^^
+note: required because it appears within the type `soroban_sdk::env::Env`
+  --> $CARGO/soroban-sdk-$VERSION/src/env.rs
+   |
+   | pub struct Env {
+   |            ^^^
+note: required because it appears within the type `TestEnv`
+  --> src/core/env.rs
+   |
+   | pub struct TestEnv {
+   |            ^^^^^^^
+note: required by a bound in `require_send`
+  --> tests/compile_fail/test_env_not_send.rs:9:20
+   |
+ 9 | fn require_send<T: Send>(_: T) {}
+   |                    ^^^^ required by this bound in `require_send`
+
+error[E0277]: `Rc<RefCell<soroban_sdk::testutils::Generators>>` cannot be sent between threads safely
+  --> tests/compile_fail/test_env_not_send.rs:13:18
+   |
+13 |     require_send(env); // ERROR: `TestEnv` is not `Send`
+   |     ------------ ^^^ `Rc<RefCell<soroban_sdk::testutils::Generators>>` cannot be sent between threads safely
+   |     |
+   |     required by a bound introduced by this call
+   |
+   = help: within `TestEnv`, the trait `Send` is not implemented for `Rc<RefCell<soroban_sdk::testutils::Generators>>`
+note: required because it appears within the type `soroban_sdk::env::EnvTestState`
+  --> $CARGO/soroban-sdk-$VERSION/src/env.rs
+   |
+   | struct EnvTestState {
+   |        ^^^^^^^^^^^^
+note: required because it appears within the type `soroban_sdk::env::Env`
+  --> $CARGO/soroban-sdk-$VERSION/src/env.rs
+   |
+   | pub struct Env {
+   |            ^^^
+note: required because it appears within the type `TestEnv`
+  --> src/core/env.rs
+   |
+   | pub struct TestEnv {
+   |            ^^^^^^^
+note: required by a bound in `require_send`
+  --> tests/compile_fail/test_env_not_send.rs:9:20
+   |
+ 9 | fn require_send<T: Send>(_: T) {}
+   |                    ^^^^ required by this bound in `require_send`
+
+error[E0277]: `Rc<RefCell<soroban_sdk::testutils::AuthSnapshot>>` cannot be sent between threads safely
+  --> tests/compile_fail/test_env_not_send.rs:13:18
+   |
+13 |     require_send(env); // ERROR: `TestEnv` is not `Send`
+   |     ------------ ^^^ `Rc<RefCell<soroban_sdk::testutils::AuthSnapshot>>` cannot be sent between threads safely
+   |     |
+   |     required by a bound introduced by this call
+   |
+   = help: within `TestEnv`, the trait `Send` is not implemented for `Rc<RefCell<soroban_sdk::testutils::AuthSnapshot>>`
+note: required because it appears within the type `soroban_sdk::env::EnvTestState`
+  --> $CARGO/soroban-sdk-$VERSION/src/env.rs
+   |
+   | struct EnvTestState {
+   |        ^^^^^^^^^^^^
+note: required because it appears within the type `soroban_sdk::env::Env`
+  --> $CARGO/soroban-sdk-$VERSION/src/env.rs
+   |
+   | pub struct Env {
+   |            ^^^
+note: required because it appears within the type `TestEnv`
+  --> src/core/env.rs
+   |
+   | pub struct TestEnv {
+   |            ^^^^^^^
+note: required by a bound in `require_send`
+  --> tests/compile_fail/test_env_not_send.rs:9:20
+   |
+ 9 | fn require_send<T: Send>(_: T) {}
+   |                    ^^^^ required by this bound in `require_send`
+
+error[E0277]: `Rc<soroban_ledger_snapshot::LedgerSnapshot>` cannot be sent between threads safely
+  --> tests/compile_fail/test_env_not_send.rs:13:18
+   |
+13 |     require_send(env); // ERROR: `TestEnv` is not `Send`
+   |     ------------ ^^^ `Rc<soroban_ledger_snapshot::LedgerSnapshot>` cannot be sent between threads safely
+   |     |
+   |     required by a bound introduced by this call
+   |
+   = help: within `TestEnv`, the trait `Send` is not implemented for `Rc<soroban_ledger_snapshot::LedgerSnapshot>`
+note: required because it appears within the type `Option<Rc<soroban_ledger_snapshot::LedgerSnapshot>>`
+  --> $RUST/core/src/option.rs
+   |
+   | pub enum Option<T> {
+   |          ^^^^^^
+note: required because it appears within the type `soroban_sdk::env::EnvTestState`
+  --> $CARGO/soroban-sdk-$VERSION/src/env.rs
+   |
+   | struct EnvTestState {
+   |        ^^^^^^^^^^^^
+note: required because it appears within the type `soroban_sdk::env::Env`
+  --> $CARGO/soroban-sdk-$VERSION/src/env.rs
+   |
+   | pub struct Env {
+   |            ^^^
+note: required because it appears within the type `TestEnv`
+  --> src/core/env.rs
+   |
+   | pub struct TestEnv {
+   |            ^^^^^^^
+note: required by a bound in `require_send`
+  --> tests/compile_fail/test_env_not_send.rs:9:20
+   |
+ 9 | fn require_send<T: Send>(_: T) {}
+   |                    ^^^^ required by this bound in `require_send`
