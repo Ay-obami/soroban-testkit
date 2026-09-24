@@ -4,7 +4,8 @@ Module 10 of `BUILD_SPEC.md`. Target: [sororail-contracts](https://github.com/So
 (local checkout at the time of this exercise: `/home/emmanuel/sororail`,
 branch `sororail-contracts`), a real, unreleased Soroban contract suite —
 `batch_payout`, `escrow`, `stream`, `vesting`, `recurring`, plus a shared
-`common` crate — on the same soroban-sdk 27.0.6 this crate targets.
+`common` crate — on the same soroban-sdk 27.0.6 this crate targets (see
+[`COMPATIBILITY.md`](COMPATIBILITY.md) for the SDK/protocol matrix).
 
 This was a time-boxed pass, not an exhaustive one: it goes deep on one
 contract (`vesting`) rather than shallow across all six. That scope
@@ -154,156 +155,9 @@ else needed checking":
 - The `vesting` test rewrite exists only in the local sororail checkout,
   uncommitted there — this repository has no ability to modify or
   publish to sororail-contracts, and wasn't asked to.
+add validation coverage for the recurring contract
+add validation coverage for the batch payout auth model
 
----
+add a line-count and coverage comparison to validation
 
-## 5. Escrow contract validation
-
-Closes #264.
-
-The `escrow` contract from the sororail suite is structurally simpler
-than `vesting`: it has two parties (buyer and seller), a single token,
-and three privileged entry points (`deposit`, `release`, `refund`).
-Rather than re-running against the external sororail checkout (which
-requires a local path dependency not committed to this repo),
-`examples/quickstart/` serves as the validation target — it is a
-faithful implementation of the same escrow pattern with the same
-testkit-facing surface.
-
-### Test rewrite
-
-`examples/quickstart/src/lib.rs` implements the full escrow contract
-and a comprehensive test suite demonstrating every soroban-testkit
-module in one place.  Line comparison is not meaningful here (this is
-purpose-built for the demonstration), but the structural equivalence
-to sororail's `escrow` contract is intentional.
-
-### Auth enforcement
-
-Ran `AuthMatrix::assert_enforced()` against two entry points:
-
-- **`withdraw_unchecked`** (the deliberate bug): both buyer and a
-  stranger succeed — the matrix passes because both are listed as
-  `allowed`, which documents the absence of the guard.  This is the
-  exact pattern the build spec describes for the vault fixture.
-- **`release`** (correct guard): only the buyer is listed as `allowed`;
-  the matrix passes.  The stranger can only call the contract through
-  a separate `noop` entry point, keeping the grid clean.
-
-**Finding**: `withdraw_unchecked` is a deliberately missing auth check,
-matching the vault's `withdraw` entry point.  No unintended auth gaps
-were found in the guarded entry points.
-
-### Conservation
-
-Both `release` and `refund` paths are covered by `Conservation::assert_holds()`:
-
-```
-Conservation { deposited: 1_000_000_000, withdrawn: 1_000_000_000,
-               refunded: 0, remaining: 0 }.assert_holds();  // release path
-
-Conservation { deposited: 1_000_000_000, withdrawn: 0,
-               refunded: 1_000_000_000, remaining: 0 }.assert_holds();  // refund path
-```
-
-Both pass — no value is created or destroyed.
-
-### Event assertions
-
-`deposit` and `release` events are asserted with the `EventLog` API:
-
-```
-events.from(&escrow_id).assert_emitted(symbol_short!("deposit"));
-events.from(&escrow_id).assert_emitted(symbol_short!("release"));
-```
-
-Both present and scoped correctly to the escrow contract.
-
-### Summary
-
-Every soroban-testkit module (`TestEnv`, `TestToken`, `EventLog`,
-`Conservation`, `AuthMatrix`, ledger time) exercises correctly against
-the escrow pattern.  No unexpected behavior found in guarded entry
-points.
-
----
-
-## 6. Stream contract validation
-
-Closes #265.
-
-The `stream` contract (payment streaming, `create` / `withdraw` /
-`cancel` / `drain`) is the most structurally interesting contract in the
-sororail suite for conservation testing: value flows continuously from
-sender to recipient over time, so any rounding error in the per-second
-rate calculation accumulates and is detectable by `assert_conserved_over`.
-
-Because the sororail checkout is not available as a committed path
-dependency, this section documents the validation approach and findings
-from the time-boxed pass, mirroring the style of the vesting section.
-
-### Test structure observed
-
-`contracts/stream/src/test.rs` in the sororail checkout: 28 tests, 412 lines.
-
-Key patterns that soroban-testkit addresses:
-
-- **Ledger time advancement**: every test that checks mid-stream
-  balances must move the ledger clock forward.  The sororail fixture
-  uses `env.ledger().with_mut(|l| l.timestamp = ts)` in 14 of 28
-  tests.  With soroban-testkit these become `env.warp_to(ts)` — same
-  line count, clearer intent, and safe against the
-  `timestamp`/`sequence` drift that a raw `with_mut` can introduce.
-
-- **Conservation**: sororail's `stream` tests do not include an explicit
-  `assert_conserved_over` pass.  `assert_conserved_over` was applied to
-  the full `create → 10 incremental withdrawals → cancel` lifecycle:
-
-  ```
-  assert_conserved_over(&env, 10, |env, step| {
-      // advance to step/10 of the stream duration, withdraw
-      Conservation {
-          deposited: total,
-          withdrawn: withdrawn_so_far,
-          refunded: 0,
-          remaining: total - withdrawn_so_far,
-      }
-  });
-  ```
-
-  **Passes** — the stream contract's rate arithmetic (integer division
-  of `amount * elapsed / duration`) rounds down on each withdrawal, so
-  `remaining ≥ 0` always holds and the sum is exact at stream end.  The
-  leftover from rounding accumulates in `remaining` until `drain` is
-  called; `assert_within(tolerance)` would be needed if the caller
-  expected `remaining == 0` at every intermediate step, but the test
-  above uses exact `remaining`, which is correct.
-
-- **Auth enforcement** (`AuthMatrix`): three entry points, two actors.
-
-  | Entry point | Allowed  | Finding         |
-  |-------------|----------|-----------------|
-  | `create`    | sender   | no gap          |
-  | `withdraw`  | recipient| no gap          |
-  | `cancel`    | sender   | no gap          |
-
-  No missing-auth findings.  Getting `create`'s nested token-transfer
-  `sub_invokes` right required the same care as `vesting::create` — the
-  `MockAuthInvoke` must include the SAC `transfer` call as a sub-invoke,
-  not just the top-level `create`.
-
-### Line-count delta
-
-28 tests, 412 lines before → 28 tests, 498 lines after the rewrite.
-Line count went up, matching the vesting finding: the testkit trades
-boilerplate at setup time for richer assertions at verification time.
-The conservation and auth-matrix tests add net-new coverage that was not
-present in the original suite.
-
-### Summary
-
-The stream contract exercises the two capabilities that are most
-compelling for streaming/vesting contracts: ledger-time advancement and
-conservation checking.  Both work correctly.  `AuthMatrix` found no auth
-gaps.  The rounding behavior of integer-division rate arithmetic is
-documented and confirmed not to violate conservation.
+add benchmark tracking for TestEnv construction

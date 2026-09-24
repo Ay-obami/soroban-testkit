@@ -114,6 +114,21 @@ This crate is under active development. See `BUILD_SPEC.md` for the build
 plan and module boundaries, and [`ARCHITECTURE.md`](ARCHITECTURE.md) for a
 contributor-facing map of the workspace and how its modules fit together.
 
+## Documentation
+
+- [`CHANGELOG.md`](CHANGELOG.md) — user-facing release notes for each
+  version of both workspace crates.
+- [`API_STABILITY.md`](API_STABILITY.md) — the semver/API stability policy
+  for the `0.x` releases: what a version bump means and what you may rely
+  on.
+- [`COMPATIBILITY.md`](COMPATIBILITY.md) — which `soroban-sdk` and Stellar
+  protocol versions each release targets.
+- [`RELEASING.md`](RELEASING.md) — the release checklist for
+  `soroban-testkit` and `soroban-testkit-cli`.
+- [`BUILD_SPEC.md`](BUILD_SPEC.md) — the build plan and module boundaries.
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — a contributor-facing map of the
+  workspace.
+
 ## Prior art
 
 [`soroban-fork`](https://crates.io/crates/soroban-fork) does lazy
@@ -123,3 +138,9 @@ mainnet/testnet forking for tests. That is a different problem;
 ## License
 
 Apache-2.0
+add validation coverage for the recurring contract
+add validation coverage for the batch payout auth model
+
+add a line-count and coverage comparison to validation
+
+add benchmark tracking for TestEnv construction

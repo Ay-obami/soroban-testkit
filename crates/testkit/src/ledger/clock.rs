@@ -1319,6 +1319,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::type_complexity)]
     fn property_calendar_helpers_match_advance_by_the_same_number_of_seconds() {
         let helpers = [
             (

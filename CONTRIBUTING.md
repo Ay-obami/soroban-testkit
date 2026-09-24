@@ -27,6 +27,21 @@ framework, anything requiring network access at test time.
   `Cargo.toml`), so a breaking upstream release is caught before it shows up
   in a contributor's PR. It opens an issue automatically if it fails; it
   never blocks a PR.
+- Every PR that changes user-facing behavior adds an entry to
+  `CHANGELOG.md` under `## [Unreleased]` (see ["How to add an
+  entry"](CHANGELOG.md#how-to-add-an-entry)). A PR that removes or renames a
+  public item must also follow the versioning policy — see
+  [Versioning and releases](#versioning-and-releases).
+
+## Versioning and releases
+
+Both workspace crates are version-locked at `0.x` and follow
+[`API_STABILITY.md`](API_STABILITY.md): a minor bump may break the API, a
+patch bump may not. The supported `soroban-sdk` / Stellar protocol versions
+per release are in [`COMPATIBILITY.md`](COMPATIBILITY.md), and the
+release checklist for both crates is in
+[`RELEASING.md`](RELEASING.md). The `docs` and `release` workflows in
+`.github/workflows/` enforce these on every PR and on every `v*` tag.
 
 ## Supply-chain policy
 
@@ -76,28 +91,9 @@ make check                # fmt + clippy + test, same as CI
 
 Labeled `good-first-issue`. Module 7 (`ttl`) is not beginner-friendly and
 is never labeled as such.
+add validation coverage for the recurring contract
+add validation coverage for the batch payout auth model
 
-## SDK upgrades and migration guides
+add a line-count and coverage comparison to validation
 
-`soroban-sdk` moves quickly. When the pinned version in `Cargo.toml` is
-bumped, a migration note is required. See [`docs/sdk-migration.md`](docs/sdk-migration.md)
-for the format and all past entries.
-
-**What triggers a migration entry:**
-
-- The `soroban-sdk` version pin in `[workspace.dependencies]` changes.
-- A public API in this crate changes because of an upstream SDK change.
-- A previously-documented behavior (e.g. ledger close interval, TTL
-  parameters, SAC decimals) is updated to match a new SDK version.
-
-**What to include** (from the template in `docs/sdk-migration.md`):
-
-1. The old and new SDK version.
-2. What broke or changed — be specific about which modules and public
-   items are affected.
-3. What a downstream user needs to change in their own test code, if
-   anything.
-4. Whether CI's scheduled-sdk-check job caught the break first (record
-   this — it is evidence the safety net works).
-
-A PR that upgrades the SDK without a migration entry will not be merged.
+add benchmark tracking for TestEnv construction

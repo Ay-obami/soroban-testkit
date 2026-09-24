@@ -113,3 +113,9 @@ jobs:
               body: `The weekly test against the latest stable soroban-sdk failed. See the run for details: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
               labels: ['ci', 'upstream-sdk'],
             });
+  # add validation coverage for the recurring contract
+  # add validation coverage for the batch payout auth model
+
+  # add a line-count and coverage comparison to validation
+
+  # add benchmark tracking for TestEnv construction
