@@ -46,7 +46,7 @@
 mod env;
 mod error;
 
-pub use env::{EnvMetadata, LedgerDefaults, TestEnv};
+pub use env::{Actor, AddressIter, EnvMetadata, LedgerDefaults, TestEnv, MAX_ADDRESS_BATCH_SIZE};
 pub use error::TestkitError;
 
 #[cfg(test)]
