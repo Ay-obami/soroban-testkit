@@ -114,3 +114,4 @@ jobs:
               labels: ['ci', 'upstream-sdk'],
             });
   # add validation coverage for the recurring contract
+  # add validation coverage for the batch payout auth model
