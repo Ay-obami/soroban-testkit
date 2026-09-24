@@ -3,11 +3,11 @@
 //! A complete, self-contained escrow contract that demonstrates every
 //! core `soroban-testkit` capability in one place:
 //!
-//! - [`TestEnv`][soroban_testkit::core::TestEnv] for environment setup
-//! - [`TestToken`][soroban_testkit::tokens::TestToken] for one-line SAC deployment and minting
-//! - [`EventLog`][soroban_testkit::events::EventLog] for event assertions
-//! - [`Conservation`][soroban_testkit::money::Conservation] for value-conservation checks
-//! - [`AuthMatrix`][soroban_testkit::auth::AuthMatrix] for systematic auth enforcement
+//! - `TestEnv` for environment setup
+//! - `TestToken` for one-line SAC deployment and minting
+//! - `EventLog` for event assertions
+//! - `Conservation` for value-conservation checks
+//! - `AuthMatrix` for systematic auth enforcement
 //! - Ledger time control via `advance` / `warp_to`
 //!
 //! ## The contract
@@ -119,7 +119,7 @@ impl Escrow {
 
         env.storage().instance().set(&DataKey::Settled, &true);
         soroban_sdk::token::TokenClient::new(&env, &token).transfer(
-            env.current_contract_address(),
+            &env.current_contract_address(),
             &seller,
             &amount,
         );
@@ -138,7 +138,7 @@ impl Escrow {
 
         env.storage().instance().set(&DataKey::Settled, &true);
         soroban_sdk::token::TokenClient::new(&env, &token).transfer(
-            env.current_contract_address(),
+            &env.current_contract_address(),
             &buyer,
             &amount,
         );
@@ -155,7 +155,7 @@ impl Escrow {
         // NOTE: no `buyer.require_auth()` — this is the deliberate bug.
         env.storage().instance().set(&DataKey::Settled, &true);
         soroban_sdk::token::TokenClient::new(&env, &token).transfer(
-            env.current_contract_address(),
+            &env.current_contract_address(),
             &seller,
             &amount,
         );
@@ -248,7 +248,7 @@ mod tests {
             }
         }
 
-        fn client(&self) -> EscrowClient {
+        fn client(&self) -> EscrowClient<'_> {
             EscrowClient::new(self.env.env(), &self.escrow_id)
         }
 
@@ -488,31 +488,35 @@ mod tests {
         // Single entry point: only buyer is allowed.  The matrix cross-checks
         // buyer (the only known address) and confirms it succeeds.
         AuthMatrix::new(&env)
-            .entry_point("release", &[buyer.clone()], move |caller: &Address| {
-                let escrow_id = sdk_env.register(Escrow, ());
+            .entry_point(
+                "release",
+                core::slice::from_ref(&buyer),
+                move |caller: &Address| {
+                    let escrow_id = sdk_env.register(Escrow, ());
 
-                sdk_env.mock_all_auths();
-                EscrowClient::new(&sdk_env, &escrow_id).deposit(
-                    &token_addr,
-                    &buyer_c,
-                    &seller_c,
-                    &amount,
-                );
+                    sdk_env.mock_all_auths();
+                    EscrowClient::new(&sdk_env, &escrow_id).deposit(
+                        &token_addr,
+                        &buyer_c,
+                        &seller_c,
+                        &amount,
+                    );
 
-                flatten_result(
-                    EscrowClient::new(&sdk_env, &escrow_id)
-                        .mock_auths(&[MockAuth {
-                            address: caller,
-                            invoke: &MockAuthInvoke {
-                                contract: &escrow_id,
-                                fn_name: "release",
-                                args: ().into_val(&sdk_env),
-                                sub_invokes: &[],
-                            },
-                        }])
-                        .try_release(),
-                )
-            })
+                    flatten_result(
+                        EscrowClient::new(&sdk_env, &escrow_id)
+                            .mock_auths(&[MockAuth {
+                                address: caller,
+                                invoke: &MockAuthInvoke {
+                                    contract: &escrow_id,
+                                    fn_name: "release",
+                                    args: ().into_val(&sdk_env),
+                                    sub_invokes: &[],
+                                },
+                            }])
+                            .try_release(),
+                    )
+                },
+            )
             .assert_enforced();
     }
 

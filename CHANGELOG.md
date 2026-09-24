@@ -57,6 +57,17 @@ section, so a merge can never land without a place to record the change.
   workflow-wide, the test suite runs with network access removed
   (`.github/scripts/test-no-network.sh`), and the crates.io `repository`
   metadata is checked against the canonical repository URL.
+- Ledger checkpoints: `TestEnv::checkpoint` captures the full ledger state as
+  a restorable `LedgerCheckpoint` value, and `TestEnv::restore_checkpoint`
+  returns the environment to it (unlike `warp_to`, it may move the clock
+  backwards).
+- Sequence-oriented clock control: `advance_to_sequence` moves the ledger to
+  an absolute sequence number, advancing the timestamp in proportion via the
+  close interval; `try_advance_to_sequence` is its checked counterpart.
+- `TestEnv::seed` exposes the seed a deterministic environment was built
+  with, so a test can rebuild an identical environment from it.
+- `TestkitError::kind` returns the variant name, and `TestkitError::chain`
+  walks the error's source chain, for match-free diagnostics and logging.
 
 ### Changed
 
@@ -72,6 +83,9 @@ section, so a merge can never land without a place to record the change.
   single-use `Env`.
 - `limits` numeric defaults were `0`, which contracts validating positive
   amounts rejected outright; the default is now `1`.
+- `soroban_testkit::prelude` re-exports `Actor` and `AddressIter` again, and
+  `core` imports `TestkitError` where it uses it; the library did not compile
+  without these.
 
 ## [0.1.0]
 

@@ -5,6 +5,50 @@ use soroban_sdk::testutils::Ledger as _;
 
 use crate::core::{TestEnv, TestkitError};
 
+/// A saved ledger position that can be restored later.
+///
+/// Captures every field of the ledger that `soroban-sdk` exposes for a test
+/// environment — timestamp, sequence number, protocol version, network ID,
+/// base reserve, and the entry time-to-live parameters — so that
+/// [`TestEnv::restore_checkpoint`] can return the environment to exactly
+/// this point.
+///
+/// A checkpoint is a plain value, not a live handle: it is independent of
+/// the environment it was taken from, can be restored more than once, and
+/// (unlike [`TestEnv::warp_to`]) restoring one may move the clock backwards.
+/// It records ledger state only — contract storage, captured events, and
+/// registered tokens are not part of it.
+///
+/// # Example
+///
+/// ```
+/// use soroban_testkit::core::TestEnv;
+/// use soroban_testkit::ledger::LedgerCheckpoint;
+/// use std::time::Duration;
+///
+/// let env = TestEnv::new();
+/// let checkpoint = env.checkpoint();
+/// env.advance(Duration::from_secs(100));
+/// env.restore_checkpoint(checkpoint);
+/// // Clock is back where it started.
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerCheckpoint {
+    info: soroban_sdk::testutils::LedgerInfo,
+}
+
+impl LedgerCheckpoint {
+    /// The ledger sequence number at the time of the checkpoint.
+    pub fn sequence(&self) -> u32 {
+        self.info.sequence_number
+    }
+
+    /// The ledger timestamp (unix seconds) at the time of the checkpoint.
+    pub fn timestamp(&self) -> u64 {
+        self.info.timestamp
+    }
+}
+
 /// Stellar's current observed average ledger close time, in seconds.
 ///
 /// This is **not** a protocol-guaranteed constant — it is a network
@@ -122,6 +166,151 @@ impl TestEnv {
     pub fn ledger_close_interval(&self) -> u64 {
         self.close_interval_override()
             .unwrap_or(LEDGER_CLOSE_TIME_SECS)
+    }
+
+    /// Capture the current ledger state as a checkpoint.
+    ///
+    /// The checkpoint records the complete ledger state (timestamp, sequence,
+    /// protocol version, network ID, base reserve, etc.) so it can be
+    /// perfectly restored later with [`TestEnv::restore_checkpoint`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    /// use std::time::Duration;
+    ///
+    /// let env = TestEnv::new();
+    /// let cp = env.checkpoint();
+    /// env.advance(Duration::from_secs(100));
+    /// env.restore_checkpoint(cp);
+    /// ```
+    pub fn checkpoint(&self) -> LedgerCheckpoint {
+        LedgerCheckpoint {
+            info: self.env().ledger().get(),
+        }
+    }
+
+    /// Restore the ledger to a previously captured checkpoint.
+    ///
+    /// Every field the checkpoint records (timestamp, sequence number,
+    /// protocol version, network ID, base reserve, and the entry
+    /// time-to-live parameters) is written back exactly as it was when
+    /// [`TestEnv::checkpoint`] was called.
+    ///
+    /// Unlike [`TestEnv::warp_to`], this may move the clock **backwards**:
+    /// that is the whole point of a checkpoint. Restoring is total — it
+    /// never panics and cannot fail, because a [`LedgerCheckpoint`] can only
+    /// be produced by [`TestEnv::checkpoint`] and therefore always holds
+    /// values the ledger accepts.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    /// use std::time::Duration;
+    ///
+    /// let env = TestEnv::new();
+    /// let cp = env.checkpoint();
+    /// env.advance(Duration::from_secs(100));
+    /// env.restore_checkpoint(cp.clone());
+    /// assert_eq!(env.now(), cp.timestamp());
+    /// assert_eq!(env.sequence(), cp.sequence());
+    /// ```
+    pub fn restore_checkpoint(&self, checkpoint: LedgerCheckpoint) {
+        self.env().ledger().set(checkpoint.info);
+    }
+
+    /// Advance the ledger to an exact sequence number.
+    ///
+    /// Sets the sequence number to `target_sequence` and moves the timestamp
+    /// forward by the number of ledgers crossed, using the environment's
+    /// [`close interval`](TestEnv::ledger_close_interval):
+    ///
+    /// ```text
+    /// timestamp += (target_sequence - current_sequence) * close_interval
+    /// ```
+    ///
+    /// This is the sequence-oriented counterpart to
+    /// [`TestEnv::advance_ledgers`], for tests that think in absolute ledger
+    /// numbers (for example, "the ledger after the vesting cliff") rather
+    /// than deltas.
+    ///
+    /// If `target_sequence` is less than or equal to the current sequence
+    /// number, this is a no-op: outside [`TestEnv::restore_checkpoint`], the
+    /// ledger clock does not run backwards.
+    ///
+    /// # Panics
+    ///
+    /// Panics with a [`TestkitError::Misuse`] if the timestamp that
+    /// `target_sequence` maps to does not fit in a `u64`. Use
+    /// [`TestEnv::try_advance_to_sequence`] to handle that case without
+    /// panicking. Both new values are computed before either is written, so
+    /// the clock is left unchanged.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// env.advance_to_sequence(100);
+    /// assert_eq!(env.sequence(), 100);
+    /// ```
+    pub fn advance_to_sequence(&self, target_sequence: u32) {
+        if let Err(e) = self.try_advance_to_sequence(target_sequence) {
+            panic!("{}", e);
+        }
+    }
+
+    /// Attempt to advance the ledger to an exact sequence number.
+    ///
+    /// This is the checked counterpart to [`TestEnv::advance_to_sequence`]:
+    /// identical mapping, but an advance whose timestamp does not fit in a
+    /// `u64` is returned as [`TestkitError::Misuse`] instead of panicking.
+    /// The clock is left unchanged on error.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use soroban_testkit::core::TestEnv;
+    ///
+    /// let env = TestEnv::new();
+    /// env.try_advance_to_sequence(100).expect("advance should succeed");
+    /// assert_eq!(env.sequence(), 100);
+    /// ```
+    pub fn try_advance_to_sequence(&self, target_sequence: u32) -> Result<(), TestkitError> {
+        let info = self.env().ledger().get();
+        let current = info.sequence_number;
+
+        // Never move the clock backwards: a target at or behind the current
+        // sequence is accepted as a no-op, exactly like a zero-length
+        // `advance`.
+        if target_sequence <= current {
+            return Ok(());
+        }
+
+        let delta = target_sequence - current;
+        let interval = self.ledger_close_interval();
+        let overflow = |part: &str| {
+            TestkitError::Misuse(format!(
+                "advancing to sequence {target_sequence} overflows ledger arithmetic: \
+                 {part} for {delta} ledgers at {interval}s per ledger does not fit \
+                 (current sequence {current})"
+            ))
+        };
+
+        let timestamp_delta = u64::from(delta)
+            .checked_mul(interval)
+            .ok_or_else(|| overflow("the timestamp delta"))?;
+        let timestamp = info
+            .timestamp
+            .checked_add(timestamp_delta)
+            .ok_or_else(|| overflow("the resulting timestamp"))?;
+
+        self.env().ledger().set_sequence_number(target_sequence);
+        self.env().ledger().set_timestamp(timestamp);
+        Ok(())
     }
 
     /// Advance the ledger clock by a wall-clock duration, advancing the
@@ -1388,5 +1577,248 @@ mod tests {
                 (prev_now, prev_sequence) = (now, sequence);
             }
         }
+    }
+
+    // --- advance_to_sequence (#60) --------------------------------------
+
+    #[test]
+    fn advance_to_sequence_lands_on_the_target_and_moves_time_proportionally() {
+        let env = TestEnv::new();
+        let (now, sequence) = clock(&env);
+
+        env.advance_to_sequence(sequence + 100);
+
+        assert_eq!(env.sequence(), sequence + 100);
+        assert_eq!(env.now(), now + 100 * LEDGER_CLOSE_TIME_SECS);
+    }
+
+    #[test]
+    fn advance_to_sequence_uses_the_environments_close_interval() {
+        let env = env_with(3);
+        let now = env.now();
+
+        env.advance_to_sequence(7);
+
+        assert_eq!(env.sequence(), 7);
+        assert_eq!(env.now(), now + 21);
+    }
+
+    #[test]
+    fn advance_to_sequence_starts_from_a_non_zero_sequence() {
+        let env = TestEnv::with_ledger_defaults(
+            crate::core::LedgerDefaults::new()
+                .timestamp(1_700_000_000)
+                .sequence_number(1_000),
+        );
+
+        env.advance_to_sequence(1_010);
+
+        assert_eq!(env.sequence(), 1_010);
+        assert_eq!(env.now(), 1_700_000_000 + 10 * LEDGER_CLOSE_TIME_SECS);
+    }
+
+    // A target at or behind the current sequence is a no-op: outside
+    // `restore_checkpoint` the clock never runs backwards, so a test cannot
+    // rewind by asking for an older ledger.
+    #[test]
+    fn advance_to_sequence_to_the_current_sequence_is_a_no_op() {
+        let env = TestEnv::new();
+        env.advance_ledgers(9);
+        let before = clock(&env);
+
+        env.advance_to_sequence(env.sequence());
+
+        assert_eq!(clock(&env), before);
+    }
+
+    #[test]
+    fn advance_to_sequence_into_the_past_is_a_no_op() {
+        let env = TestEnv::new();
+        env.advance_to_sequence(500);
+        let before = clock(&env);
+
+        env.advance_to_sequence(1);
+
+        assert_eq!(clock(&env), before);
+    }
+
+    #[test]
+    fn try_advance_to_sequence_reports_overflow_without_moving_the_clock() {
+        let env = TestEnv::new();
+        env.env().ledger().set_timestamp(u64::MAX - 10);
+        let before = clock(&env);
+
+        let error = env
+            .try_advance_to_sequence(env.sequence() + 10)
+            .expect_err("a mapped timestamp past u64::MAX must be rejected");
+
+        assert_eq!(error.kind(), "Misuse");
+        assert!(
+            error.message().contains("overflows ledger arithmetic"),
+            "{error}"
+        );
+        assert_eq!(clock(&env), before, "clock moved on a rejected advance");
+    }
+
+    #[test]
+    #[should_panic(expected = "overflows ledger arithmetic")]
+    fn advance_to_sequence_rejects_a_mapped_timestamp_that_does_not_fit() {
+        let env = TestEnv::new();
+        env.env().ledger().set_timestamp(u64::MAX - 10);
+        env.advance_to_sequence(env.sequence() + 10);
+    }
+
+    #[test]
+    fn advance_to_sequence_leaves_the_clock_untouched_when_it_panics() {
+        let env = TestEnv::new();
+        env.env().ledger().set_timestamp(u64::MAX - 10);
+        let before = clock(&env);
+
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            env.advance_to_sequence(env.sequence() + 10);
+        }));
+
+        assert!(result.is_err(), "advance should have panicked");
+        assert_eq!(clock(&env), before);
+    }
+
+    #[test]
+    fn property_advance_to_sequence_matches_advance_ledgers() {
+        for (case, mut rng) in cases(11) {
+            let interval = random_interval(&mut rng);
+            let n = rng.range(0, 100_000) as u32;
+
+            let by_sequence = env_with(interval);
+            let by_ledgers = env_with(interval);
+            let target = by_sequence.sequence() + n;
+
+            by_sequence.advance_to_sequence(target);
+            by_ledgers.advance_ledgers(n);
+
+            assert_eq!(
+                clock(&by_sequence),
+                clock(&by_ledgers),
+                "case {case}: interval={interval}s, target={target}"
+            );
+        }
+    }
+
+    // --- LedgerCheckpoint (#61) -----------------------------------------
+
+    #[test]
+    fn checkpoint_restores_the_exact_clock_position() {
+        let env = TestEnv::new();
+        let checkpoint = env.checkpoint();
+
+        env.advance(Duration::from_secs(600));
+        assert_ne!(clock(&env), (checkpoint.timestamp(), checkpoint.sequence()));
+
+        env.restore_checkpoint(checkpoint.clone());
+
+        assert_eq!(clock(&env), (checkpoint.timestamp(), checkpoint.sequence()));
+    }
+
+    #[test]
+    fn restore_checkpoint_returns_every_recorded_ledger_field() {
+        let env = TestEnv::new();
+        let original = env.env().ledger().get();
+        let checkpoint = env.checkpoint();
+
+        env.env().ledger().with_mut(|info| {
+            info.timestamp = info.timestamp.wrapping_add(9_999);
+            info.sequence_number = info.sequence_number.wrapping_add(42);
+            info.protocol_version = info.protocol_version.wrapping_add(1);
+            info.network_id = [7; 32];
+            info.base_reserve = info.base_reserve.wrapping_add(1);
+            info.min_temp_entry_ttl = info.min_temp_entry_ttl.wrapping_add(1);
+            info.min_persistent_entry_ttl = info.min_persistent_entry_ttl.wrapping_add(1);
+            info.max_entry_ttl = info.max_entry_ttl.wrapping_add(1);
+        });
+        assert_ne!(
+            env.env().ledger().get(),
+            original,
+            "the fixture failed to disturb the ledger"
+        );
+
+        env.restore_checkpoint(checkpoint);
+
+        assert_eq!(env.env().ledger().get(), original);
+    }
+
+    #[test]
+    fn a_checkpoint_is_a_snapshot_not_a_live_view() {
+        let env = TestEnv::new();
+        let checkpoint = env.checkpoint();
+        let taken = (checkpoint.timestamp(), checkpoint.sequence());
+
+        env.advance(Duration::from_secs(300));
+
+        assert_eq!(
+            (checkpoint.timestamp(), checkpoint.sequence()),
+            taken,
+            "moving the clock must not change an existing checkpoint"
+        );
+    }
+
+    #[test]
+    fn a_checkpoint_can_be_restored_more_than_once() {
+        let env = TestEnv::new();
+        let checkpoint = env.checkpoint();
+
+        for restore_number in 0..3 {
+            env.advance(Duration::from_secs(60));
+            env.restore_checkpoint(checkpoint.clone());
+            assert_eq!(
+                clock(&env),
+                (checkpoint.timestamp(), checkpoint.sequence()),
+                "restore {restore_number}"
+            );
+        }
+    }
+
+    // A checkpoint is the documented way to move the ledger clock backwards,
+    // so a rewind must be accepted rather than treated as misuse.
+    #[test]
+    fn restore_checkpoint_may_rewind_the_clock() {
+        let env = TestEnv::new();
+        let checkpoint = env.checkpoint();
+
+        env.advance(Duration::from_secs(600));
+        let before = env.sequence();
+
+        env.restore_checkpoint(checkpoint);
+
+        assert_eq!(env.sequence(), 0);
+        assert!(env.sequence() < before);
+    }
+
+    // A checkpoint is a value, not a handle into the environment it came
+    // from, so it can be applied to a different environment.
+    #[test]
+    fn a_checkpoint_can_be_applied_to_another_environment() {
+        let source = TestEnv::with_ledger_defaults(
+            crate::core::LedgerDefaults::new()
+                .timestamp(1_700_000_000)
+                .sequence_number(77),
+        );
+        let checkpoint = source.checkpoint();
+
+        let target = TestEnv::new();
+        assert_ne!(target.sequence(), checkpoint.sequence());
+
+        target.restore_checkpoint(checkpoint.clone());
+
+        assert_eq!(target.now(), checkpoint.timestamp());
+        assert_eq!(target.sequence(), checkpoint.sequence());
+    }
+
+    #[test]
+    fn checkpoints_carry_value_equality() {
+        let env = TestEnv::new();
+        assert_eq!(env.checkpoint(), env.checkpoint());
+
+        let before = env.checkpoint();
+        env.advance(Duration::from_secs(1));
+        assert_ne!(env.checkpoint(), before);
     }
 }
