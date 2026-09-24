@@ -52,6 +52,11 @@ section, so a merge can never land without a place to record the change.
 - Project and release documentation: `API_STABILITY.md`,
   `COMPATIBILITY.md`, `RELEASING.md`, this changelog, and the automated
   `docs` and `release` workflows.
+- CI quality gates, each guarded by a regression test: `README.md`
+  examples run as an explicit doc-test step, rustdoc warnings are denied
+  workflow-wide, the test suite runs with network access removed
+  (`.github/scripts/test-no-network.sh`), and the crates.io `repository`
+  metadata is checked against the canonical repository URL.
 
 ### Changed
 

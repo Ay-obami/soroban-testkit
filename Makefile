@@ -12,7 +12,8 @@ lint:
 	cargo clippy --workspace --all-targets -- -D warnings
 
 test:
-	cargo test --workspace
+	cargo test --workspace --all-targets
+	cargo test --workspace --doc
 
 doc:
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
